@@ -104,6 +104,25 @@ def resolve_app(name: str, apps: list[App]) -> App | None:
     return None
 
 
+def app_for_process(exe: str, apps: list[App]) -> App | None:
+    """プロセス名 -> 許可リストのアプリ（前面アプリをモデルに分かりやすく伝えるため）。"""
+    low = str(exe).lower()
+    for app in apps:
+        if low in {p.lower() for p in app.process}:
+            return app
+    return None
+
+
+def signature(a: dict) -> tuple:
+    """繰り返し判定用の操作の識別子。クリックは 30px 四方を同じ場所とみなす。"""
+    t = a.get("action")
+    if t in CLICKS:
+        return (t, int(a["x"] // 30), int(a["y"] // 30))
+    if t == "scroll":
+        return (t, a.get("dy"))
+    return (t, str(a.get("text", "")).strip().lower())
+
+
 def validate(a: dict, image_size: tuple[int, int], apps: list[App]) -> str | None:
     """エラーの説明（日本語）を返す。正しければ None。image_size はモデルに送った画像の (幅, 高さ)。"""
     t = a.get("action")

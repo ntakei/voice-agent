@@ -21,7 +21,14 @@ screen:
 # コードが画像の範囲内か検証してから実画面座標に換算する。
 
 agent:
-  dry_run: true             # true: 操作せず、実行内容を表示するだけ
+  dry_run: true             # true: 操作せず、実行内容を表示するだけ（--live で実際に操作）
+  max_steps: 25             # これを超えたら強制停止
+  history_steps: 8          # モデルに送る直近ステップの1行要約の数
+  settle_max: 1.5           # 操作後、画面が落ち着くまで待つ最大秒数
+  settle_max_open_app: 4.0  # open_app の後はアプリの起動を待つので長め
+  think_after_no_change: 2  # 画面が変わらない操作がこの回数続いたら思考を強める
+  think_after_bad_json: 2   # 無効な返答がこの回数続いたら思考を強める
+  think_after_blocked: 2    # 繰り返しでブロックされた手がこの回数続いたら思考を強める
 
 # open_app で起動・前面化してよいアプリ（ここにないアプリは拒否）
 #   names:   モデルやユーザーが使う呼び名（大文字小文字は区別しない）
@@ -40,6 +47,24 @@ apps:
   - names: [ペイント, paint, mspaint]
     launch: mspaint.exe
     process: [mspaint.exe]
-  - names: [エクスプローラー, explorer, file explorer]
-    launch: explorer.exe
-    process: [explorer.exe]
+  # エクスプローラーは入れない: アドレス欄に "cmd" などと入力すると、許可リスト外のプログラムを起動できてしまうため
+
+# 安全ルール（プロンプトではなくコードで強制する）
+safety:
+  # これらの語が「入力する文字列」「reason」「クリック先の要素名（UI Automation）」に含まれたら、実行前に人間が確認する
+  # 日本語は部分一致、英語は単語単位で照合
+  risky_words: [送信, 送る, 削除, 消去, 消す, 購入, 買う, 注文, 支払, 決済, 提出, 投稿, 公開, 送金, 振込, 振り込,
+                ゴミ箱を空, 完全に削除, send, delete, remove, buy, purchase, order, pay, checkout, submit, post,
+                publish, transfer, erase]
+  # 確認が必要なキー（送信・削除のショートカット）
+  risky_keys: [delete, shift+delete, ctrl+enter, ctrl+shift+enter, alt+s, ctrl+d, alt+f4]
+  # 実行を拒否するキー（Windows キーの組み合わせは、許可リスト外のアプリを起動できるので一律拒否）
+  blocked_keys: [win, ctrl+esc, ctrl+shift+esc, ctrl+alt+delete]
+  # パスワードの入力とみなす語（reason・要素名に含まれたら入力を拒否）
+  password_words: [パスワード, 暗証番号, password, passcode, passwd]
+  # この前面アプリへのキー入力・文字入力は拒否する（エージェント自身の端末・開発ツールなど）
+  protected_processes: [WindowsTerminal.exe, OpenConsole.exe, cmd.exe, conhost.exe, powershell.exe, pwsh.exe,
+                        python.exe, claude.exe, Code.exe, Cursor.exe, ttermpro.exe, mstsc.exe,
+                        SearchHost.exe, StartMenuExperienceHost.exe, explorer.exe]
+  confirm_timeout_secs: 30  # 確認ダイアログに答えがなければ「いいえ」
+  stop_key: esc             # このキーで即時停止（人が押したときだけ。プログラムが送ったキーは無視）

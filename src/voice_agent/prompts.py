@@ -18,6 +18,7 @@ Rules:
 - Before typing, make sure the right input field is focused (click it first if needed).
 - Prefer keyboard shortcuts when they do the same thing as a click (ctrl+l for the address bar, ctrl+t for a new tab).
 - type does not press Enter. Use a separate key action "enter" when needed.
+- To enter numbers or a formula (for example in Calculator), type it all at once with the keyboard, e.g. "12*34=", instead of clicking on-screen buttons.
 - If the last action did not change the screen, try a different approach instead of repeating it.
 - When the task is complete and the screen shows the result, return "done".
 - If the task is impossible, return "fail" and explain why in reason.
@@ -28,15 +29,19 @@ def system_prompt(image_size: tuple[int, int], app_names: list[str]) -> str:
     return SYSTEM.format(w=image_size[0], h=image_size[1], apps=", ".join(app_names))
 
 
-def user_prompt(task: str, history: list[str], front_app: str, changed: bool | None = None) -> str:
+def user_prompt(task: str, history: list[str], front_app: str, changed: bool | None = None,
+                blocked: list[str] | None = None, first_index: int = 1) -> str:
+    """history は直近ステップの1行要約（古い順）。first_index はその先頭のステップ番号。"""
     lines = [f"TASK: {task}", ""]
     if history:
         lines.append("RECENT STEPS (oldest first):")
-        lines += [f"{i}. {h}" for i, h in enumerate(history, 1)]
+        lines += [f"{i}. {h}" for i, h in enumerate(history, first_index)]
     else:
         lines.append("RECENT STEPS: none, this is the first step.")
     if changed is False:
         lines.append("\nThe last action did NOT change the screen. Try a different approach.")
+    if blocked:
+        lines.append("\nBLOCKED actions (already tried without effect; choose something else): " + "; ".join(blocked))
     lines.append(f"\nFront app (receives keys and typing): {front_app or 'unknown'}")
     lines.append("Return the next ONE action as JSON.")
     return "\n".join(lines)
