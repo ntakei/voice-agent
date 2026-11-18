@@ -1,0 +1,45 @@
+# 音声操作エージェントの設定（秘密情報は .env に書く）
+
+model:
+  base_url: http://172.25.5.48:8000/v1   # .env の VA_BASE_URL があればそちらを優先
+  name: GLM-5.3-Flash-EXL3               # .env の VA_MODEL があればそちらを優先
+  temperature: 0.2
+  timeout_secs: 60          # 思考なしの1回あたり
+  timeout_secs_thinking: 240
+  # 思考モード: off = chat_template_kwargs.enable_thinking=false
+  #             low = reasoning_effort: "low"
+  #             on  = モデル既定（思考あり）
+  # ※ YAML では引用符なしの off / on が真偽値になるので、必ず引用符で囲む
+  thinking_normal: "off"    # 通常ステップ
+  thinking_stuck: "on"      # 行き詰まったとき
+
+screen:
+  model_image_width: 1512   # モデルに送る画像の幅（px）。0 なら縮小しない
+  jpeg_quality: 90
+
+# モデルの x, y は「送った画像のピクセル座標」（フェーズ3の検証結果による）。
+# コードが画像の範囲内か検証してから実画面座標に換算する。
+
+agent:
+  dry_run: true             # true: 操作せず、実行内容を表示するだけ
+
+# open_app で起動・前面化してよいアプリ（ここにないアプリは拒否）
+#   names:   モデルやユーザーが使う呼び名（大文字小文字は区別しない）
+#   launch:  起動コマンド（App Paths で解決できる実行ファイル名）
+#   process: 起動後のウィンドウのプロセス名（target_app の照合にも使う）
+apps:
+  - names: [メモ帳, notepad]
+    launch: notepad.exe
+    process: [notepad.exe]
+  - names: [電卓, calculator, calc]
+    launch: calc.exe
+    process: [CalculatorApp.exe, calc.exe]
+  - names: [Edge, Microsoft Edge, ブラウザ, browser]
+    launch: msedge.exe
+    process: [msedge.exe]
+  - names: [ペイント, paint, mspaint]
+    launch: mspaint.exe
+    process: [mspaint.exe]
+  - names: [エクスプローラー, explorer, file explorer]
+    launch: explorer.exe
+    process: [explorer.exe]

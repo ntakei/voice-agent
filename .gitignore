@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+
+# 秘密情報・ローカル設定
+.env
+
+# 実行ログ（スクリーンショットを含む）
+runs/
+scripts/out/
+
+# Whisper モデルのキャッシュ
+models/
