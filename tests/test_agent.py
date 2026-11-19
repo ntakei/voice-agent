@@ -56,6 +56,10 @@ def env(monkeypatch, tmp_path):
     for name in ("moveTo", "click", "doubleClick", "hotkey", "scroll"):
         monkeypatch.setattr(executor.pyautogui, name, lambda *a, _n=name, **k: acted.append(_n))
     monkeypatch.setattr(executor, "paste_text", lambda text: acted.append("paste"))
+    # アプリの起動・前面化・最大化も記録だけにする（テストで実際のアプリが開かないように）
+    monkeypatch.setattr(executor, "launch", lambda exe: acted.append(f"launch:{exe}") or "CreateProcess")
+    monkeypatch.setattr(winapi, "activate", lambda hwnd: acted.append("activate") or True)
+    monkeypatch.setattr(winapi, "maximize", lambda hwnd: acted.append("maximize") or True)
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
     # UI Automation と FAILSAFE の確認も偽物に（テスト中の実際のマウス位置に左右されないように）
     el = {"clicked": None, "focused": None}
@@ -302,6 +306,7 @@ def test_front_window_switch_counts_as_change(env):
     ag = agent_mod.Agent(CFG, hooks=SwitchOnAct(), dry_run=False, client=client)
     s = ag.run("テスト")   # 画面の画像は同じでも、前面が切り替わったら「変わった」
     assert "[screen changed]" in client.calls[1]["prompt"]
+    assert env["acted"][0] == "launch:notepad.exe"      # 実際には起動していない（記録だけ）
     _, rows = rows_of(env, s)
     assert rows[1]["compared"] == "前面ウィンドウが切り替わった" and s["warnings"] == []
 
@@ -332,3 +337,62 @@ def test_dry_run_never_warns(env):
 def test_unverified_done(history, expect):
     w = agent_mod.unverified_done(history)
     assert (expect in w and w) if expect else w == ""
+
+
+# ---- 行き詰まりの打ち切り・思考の上限・停止時の接続切断 ----
+
+def test_gives_up_after_repeated_blocks(env):
+    same_click = J(action="click", x=100, y=200, reason="押す")
+    ag, client = make([same_click] * 20, dry_run=False)
+    s = ag.run("テスト")
+    assert s["result"] == "fail" and "行き詰まった" in s["reason"]
+    assert env["acted"].count("click") == 2          # 効かなかった2回だけ実行
+    assert len(client.calls) == 2 + 4                # 2回実行 + ブロック4回で打ち切り（それ以上は聞かない）
+
+
+def test_give_up_can_be_disabled(env):
+    cfg = {**CFG, "agent": {**CFG["agent"], "give_up_after_blocks": 0}}
+    client = FakeClient([J(action="click", x=100, y=200)] * 7 + [J(action="done")])
+    ag = agent_mod.Agent(cfg, hooks=QuietHooks(), dry_run=False, client=client)
+    assert ag.run("テスト")["result"] == "done"
+
+
+def test_thinking_cut_by_length_falls_back_to_off(env):
+    class LengthWhenThinking(FakeClient):
+        def chat(self, messages, image=None, thinking="off", **kw):
+            if thinking != "off":
+                self.calls.append({"thinking": thinking, "prompt": messages[-1]["content"], "image_size": image.size})
+                return {"content": "", "reasoning": "とても長い思考…", "finish_reason": "length",
+                        "usage": {"completion_tokens": 3000}, "secs": 60.0, "thinking": thinking}
+            return super().chat(messages, image=image, thinking=thinking, **kw)
+    client = LengthWhenThinking(["壊れた", "{壊れた", J(action="done", reason="完了")])
+    ag = agent_mod.Agent(CFG, hooks=QuietHooks(), dry_run=True, client=client)
+    s = ag.run("テスト")
+    assert s["result"] == "done"
+    assert [c["thinking"] for c in client.calls] == ["off", "off", "on", "off"]   # 思考が切れたら思考なしで聞き直す
+    d = env["tmp"] / s["dir"].replace("\\", "/").split("/")[-1]
+    rows = [json.loads(l) for l in (d / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert "思考なしで聞き直した" in rows[-1]["thinking_cut"] and rows[-1]["model_secs"] >= 60
+
+
+def test_stop_cancels_model_call(env):
+    import threading
+    import time
+
+    class Slow(FakeClient):
+        def __init__(self):
+            super().__init__([])
+            self.cancelled = threading.Event()
+
+        def chat(self, *a, **k):
+            self.cancelled.wait(5)
+            raise RuntimeError("切断された")
+
+        def cancel(self):
+            self.cancelled.set()
+    client = Slow()
+    ag = agent_mod.Agent(CFG, hooks=QuietHooks(), dry_run=False, client=client)
+    threading.Timer(0.3, ag.stop).start()
+    t = time.time()
+    s = ag.run("テスト")
+    assert s["result"] == "stopped" and client.cancelled.is_set() and time.time() - t < 2

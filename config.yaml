@@ -5,7 +5,9 @@ model:
   name: GLM-5.3-Flash-EXL3               # .env の VA_MODEL があればそちらを優先
   temperature: 0.2
   timeout_secs: 60          # 思考なしの1回あたり
-  timeout_secs_thinking: 240
+  timeout_secs_thinking: 90 # 思考ありの1回あたり（超えたら接続を切り、サーバー側の生成も止める）
+  max_tokens_thinking: 3000 # 思考ありの出力トークン上限（約70秒）。超えたら思考なしで聞き直す
+                            # ※ フェーズ7で上限なしの思考が 8,600 トークン・205 秒かかり、GPU を使い続けた
   # 思考モード: off = chat_template_kwargs.enable_thinking=false
   #             low = reasoning_effort: "low"
   #             on  = モデル既定（思考あり）
@@ -26,9 +28,11 @@ agent:
   history_steps: 8          # モデルに送る直近ステップの1行要約の数
   settle_max: 1.5           # 操作後、画面が落ち着くまで待つ最大秒数
   settle_max_open_app: 4.0  # open_app の後はアプリの起動を待つので長め
+  maximize_on_open: true    # open_app で前面にしたウィンドウを最大化（他のウィンドウとの重なりでクリックが外れないように）
   think_after_no_change: 2  # 画面が変わらない操作がこの回数続いたら思考を強める
   think_after_bad_json: 2   # 無効な返答がこの回数続いたら思考を強める
   think_after_blocked: 2    # 繰り返しでブロックされた手がこの回数続いたら思考を強める
+  give_up_after_blocks: 4   # 1回の実行でブロックがこの回数に達したら、行き詰まりとして打ち切る（0 = 打ち切らない）
 
 # open_app で起動・前面化してよいアプリ（ここにないアプリは拒否）
 #   names:   モデルやユーザーが使う呼び名（大文字小文字は区別しない）

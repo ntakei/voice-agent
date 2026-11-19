@@ -30,8 +30,9 @@ class ExecResult:
 
 class Executor:
     def __init__(self, screen_size: tuple[int, int], apps: list[actions.App], dry_run: bool = True,
-                 stop_event: threading.Event | None = None):
+                 stop_event: threading.Event | None = None, maximize: bool = True):
         self.screen_size = screen_size
+        self.maximize = maximize   # open_app で前面にしたウィンドウを最大化する
         self.apps = apps
         self.dry_run = dry_run
         self.stop_event = stop_event or threading.Event()
@@ -85,14 +86,16 @@ class Executor:
             return ExecResult(label, None, False, "許可されていないアプリ")
         existing = winapi.find_window(app.process)
         if self.dry_run:
+            mx = "（最大化）" if self.maximize else ""
             if existing:
-                return ExecResult(label, None, False, f"既存のウィンドウを前面にする: {existing.describe()}")
-            return ExecResult(label, None, False, f"起動する: {app.launch}")
+                return ExecResult(label, None, False, f"既存のウィンドウを前面にする{mx}: {existing.describe()}")
+            return ExecResult(label, None, False, f"起動する{mx}: {app.launch}")
         if self.stop_event.is_set():
             return ExecResult(label, None, False, "停止要求のため実行せず")
         if existing:
+            mx = self._maximize(existing.hwnd)
             ok = winapi.activate(existing.hwnd)
-            return ExecResult(label, None, True, f"前面化{'成功' if ok else '失敗'}: {existing.describe()}")
+            return ExecResult(label, None, True, f"前面化{'成功' if ok else '失敗'}{mx}: {existing.describe()}")
         try:
             how = launch(app.launch)
         except OSError as e:
@@ -102,10 +105,17 @@ class Executor:
         while time.time() < end and not self.stop_event.is_set():
             w = winapi.find_window(app.process)
             if w:
+                mx = self._maximize(w.hwnd)
                 winapi.activate(w.hwnd)
-                return ExecResult(label, None, True, f"起動（{how}）: {w.describe()}")
+                return ExecResult(label, None, True, f"起動（{how}）{mx}: {w.describe()}")
             time.sleep(0.25)
         return ExecResult(label, None, True, f"起動したがウィンドウが見つからない: {app.launch}（{how}）")
+
+
+    def _maximize(self, hwnd: int) -> str:
+        if not self.maximize:
+            return ""
+        return "・最大化" if winapi.maximize(hwnd) else "・最大化できず"
 
 
 def launch(exe: str) -> str:

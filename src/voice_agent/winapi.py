@@ -74,6 +74,16 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
     return (l, t, r, b) if r > l and b > t else None
 
 
+def maximize(hwnd: int) -> bool:
+    """ウィンドウを最大化する（他のウィンドウとの重なりで、クリックが別のアプリに当たらないように）。"""
+    try:
+        if not win32gui.IsZoomed(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
+        return bool(win32gui.IsZoomed(hwnd))
+    except Exception:
+        return False
+
+
 def is_cloaked(hwnd: int) -> bool:
     """見えない UWP ウィンドウ（別の仮想デスクトップや待機中のもの）なら True。"""
     val = ctypes.c_int(0)

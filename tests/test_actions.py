@@ -146,7 +146,7 @@ def test_dry_run_does_nothing(no_input, a, label_part, point):
 def test_dry_run_open_app_detail(no_input):
     a, _ = check({"action": "open_app", "text": "電卓"})
     r = executor.Executor(SCREEN, APPS, dry_run=True).execute(a, IMG)
-    assert "起動する: calc.exe" in r.detail
+    assert "起動する（最大化）: calc.exe" in r.detail
 
 
 def test_real_mode_respects_stop(no_input):
@@ -210,3 +210,34 @@ def test_open_app_launch_failure_is_reported_not_raised(monkeypatch):
     a, _ = check({"action": "open_app", "text": "メモ帳"})
     r = executor.Executor(SCREEN, APPS, dry_run=False).execute(a, IMG)
     assert r.executed is False and r.detail.startswith("起動に失敗")
+
+
+# ---- open_app で最大化 ----
+
+def open_app_real(monkeypatch, maximize=True, existing=True):
+    calls = []
+    w = executor.winapi.WindowInfo(42, "電卓", "CalculatorApp.exe")
+    found = [w] if existing else [None, w]
+    monkeypatch.setattr(executor.winapi, "find_window", lambda procs: found.pop(0) if len(found) > 1 else found[0])
+    monkeypatch.setattr(executor.winapi, "maximize", lambda hwnd: calls.append(("maximize", hwnd)) or True)
+    monkeypatch.setattr(executor.winapi, "activate", lambda hwnd: calls.append(("activate", hwnd)) or True)
+    monkeypatch.setattr(executor, "launch", lambda exe: calls.append(("launch", exe)) or "CreateProcess")
+    monkeypatch.setattr(executor.time, "sleep", lambda s: None)
+    a, _ = check({"action": "open_app", "text": "電卓"})
+    r = executor.Executor(SCREEN, APPS, dry_run=False, maximize=maximize).execute(a, IMG)
+    return calls, r
+
+
+def test_open_app_maximizes_existing_window(monkeypatch):
+    calls, r = open_app_real(monkeypatch)
+    assert calls == [("maximize", 42), ("activate", 42)] and "最大化" in r.detail
+
+
+def test_open_app_maximizes_launched_window(monkeypatch):
+    calls, r = open_app_real(monkeypatch, existing=False)
+    assert calls == [("launch", "calc.exe"), ("maximize", 42), ("activate", 42)]
+
+
+def test_open_app_without_maximize(monkeypatch):
+    calls, r = open_app_real(monkeypatch, maximize=False)
+    assert calls == [("activate", 42)] and "最大化" not in r.detail

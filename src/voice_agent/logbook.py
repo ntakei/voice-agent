@@ -81,7 +81,8 @@ class Session:
                 + (f'（{r["compared"]}）' if r.get("compared") and r.get("changed_before") is not None else ""),
                 "dry-run" if r.get("dry_run") else "",
             ] if x)
-            notes = "".join(f'<p class="note">{e(str(n))}</p>' for n in r.get("notes", []))
+            notes = "".join(f'<p class="note">{e(str(n))}</p>' for n in r.get("notes", []) + (
+                [r["thinking_cut"]] if r.get("thinking_cut") else []))
             err = f'<p class="err">{e(str(r["error"]))}</p>' if r.get("error") else ""
             if r.get("warning"):
                 err += f'<p class="warn">⚠ {e(str(r["warning"]))}</p>'

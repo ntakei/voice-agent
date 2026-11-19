@@ -106,6 +106,9 @@ class Agent:
         th.start()
         while th.is_alive():
             if self.stop_event.wait(0.03):
+                cancel = getattr(self.client, "cancel", None)
+                if cancel:
+                    cancel()     # 接続を切って、サーバー側の生成も止める
                 raise Stopped()
         if "e" in box:
             raise box["e"]
@@ -145,7 +148,8 @@ class Agent:
         quality = sc.get("jpeg_quality", 90)
         hist_n = ac.get("history_steps", 8)
         screen_size = screen.screen_size()
-        ex = Executor(screen_size, self.apps, dry_run=self.dry_run, stop_event=self.stop_event)
+        ex = Executor(screen_size, self.apps, dry_run=self.dry_run, stop_event=self.stop_event,
+                      maximize=bool(ac.get("maximize_on_open", True)))
         s = Session(task, source, meta={
             "model": self.cfg["model"]["name"], "dry_run": self.dry_run, "max_steps": self.max_steps,
             "think_normal": self.think_normal, "think_stuck": self.think_stuck,
@@ -161,7 +165,8 @@ class Agent:
         done_sigs: list[tuple] = []
         prev_img, prev_sig, next_img, prev_front = None, None, None, None
         warnings: list[str] = []
-        no_change_run = bad_json_run = blocked_run = 0
+        no_change_run = bad_json_run = blocked_run = total_blocks = 0
+        give_up = int(ac.get("give_up_after_blocks", 4))
         result, reason = "fail", f"最大ステップ数（{self.max_steps}）に達した"
 
         self.hooks.status("start", f"タスク: {task}" + ("（dry-run）" if self.dry_run else ""))
@@ -170,6 +175,10 @@ class Agent:
             for step in range(1, self.max_steps + 1):
                 if self.stop_event.is_set():
                     raise Stopped()
+                if give_up and total_blocks >= give_up:
+                    # 同じ手の繰り返しなどでブロックが続いたら、考え直し（長い思考）に時間と GPU を使い続けずに打ち切る
+                    result, reason = "fail", f"行き詰まった（ブロックが {total_blocks} 回）"
+                    break
                 self.failsafe_check()
                 img = next_img if next_img is not None else screen.capture()
                 next_img = None
@@ -219,6 +228,24 @@ class Agent:
                     s.log_step({**base, "label": "モデル呼び出しエラー", "error": f"{type(e).__name__}: {e}"})
                     result, reason = "fail", f"モデル呼び出しエラー: {type(e).__name__}"
                     break
+                if thinking != "off" and r["finish_reason"] == "length" and parse_json(r["content"]) is None:
+                    # 思考がトークンの上限に達して答えが出なかった → 思考なしでもう一度だけ聞く
+                    self.hooks.status("thinking", f"[{step:02d}] 思考が長すぎたので、思考なしで聞き直します…")
+                    first = r
+                    try:
+                        r = self._call(self.client.chat,
+                                       [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+                                       image=sent, thinking="off", image_quality=quality)
+                    except Stopped:
+                        raise
+                    except Exception as e:  # noqa: BLE001
+                        s.log_step({**base, "label": "モデル呼び出しエラー", "error": f"{type(e).__name__}: {e}"})
+                        result, reason = "fail", f"モデル呼び出しエラー: {type(e).__name__}"
+                        break
+                    r["secs"] = round(first["secs"] + r["secs"], 2)
+                    r["reasoning"] = first["reasoning"]
+                    base["thinking_cut"] = (f"思考が上限（{first['usage'].get('completion_tokens')} トークン）に達したので"
+                                            "思考なしで聞き直した")
                 record = {"system": system, "prompt": prompt, "reply": r["content"], "reasoning": r["reasoning"],
                           "finish_reason": r["finish_reason"], "usage": r["usage"], "thinking": thinking}
                 base.update(model_secs=r["secs"], completion_tokens=r["usage"].get("completion_tokens"),
@@ -269,6 +296,7 @@ class Agent:
                 sig = actions.signature(a)
                 if sig in blocked:
                     blocked_run += 1
+                    total_blocks += 1
                     row["error"] = "ブロック: 効果がなかった操作の繰り返し"
                     history.append({"line": f"{label} -> BLOCKED (already tried; it did not change the screen)",
                                     "changed": None, "label": label})
@@ -278,6 +306,7 @@ class Agent:
                     continue
                 if len(done_sigs) >= 2 and done_sigs[-1] == sig and done_sigs[-2] == sig:
                     blocked_run += 1
+                    total_blocks += 1
                     row["error"] = "ブロック: 同じ操作の3回連続"
                     history.append({"line": f"{label} -> BLOCKED: done twice already. Do the NEXT step of the task.",
                                     "changed": None, "label": label})
@@ -296,6 +325,7 @@ class Agent:
                         row[k] = el.describe()
                 if d.kind in (safety.BLOCK, safety.STOP):
                     blocked_run += 1
+                    total_blocks += 1
                     row.update(error=f"ブロック: {d.reason}", guard=d.kind)
                     history.append({"line": f"{label} -> BLOCKED: {d.reason}", "changed": None, "label": label})
                     s.log_step(row, record)
