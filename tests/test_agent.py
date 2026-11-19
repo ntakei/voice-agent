@@ -48,7 +48,9 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(screen, "capture", capture)
     monkeypatch.setattr(screen, "screen_size", lambda: SCREEN)
     monkeypatch.setattr(screen, "settle", lambda stop_event=None, **k: capture())
-    monkeypatch.setattr(winapi, "foreground", lambda: winapi.WindowInfo(1, "無題 - メモ帳", "notepad.exe"))
+    front = {"w": winapi.WindowInfo(1, "無題 - メモ帳", "notepad.exe"), "rect": None}
+    monkeypatch.setattr(winapi, "foreground", lambda: front["w"])
+    monkeypatch.setattr(winapi, "window_rect", lambda hwnd: front["rect"])   # None = 画面全体で比べる
     monkeypatch.setattr(winapi, "find_window", lambda procs: None)
     acted = []
     for name in ("moveTo", "click", "doubleClick", "hotkey", "scroll"):
@@ -60,7 +62,7 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(uia, "element_at", lambda x, y: el["clicked"])
     monkeypatch.setattr(uia, "focused_element", lambda: el["focused"])
     monkeypatch.setattr(agent_mod.Agent, "failsafe_check", lambda self: None)
-    return {"frames": frames, "acted": acted, "tmp": tmp_path, "el": el}
+    return {"frames": frames, "acted": acted, "tmp": tmp_path, "el": el, "front": front}
 
 
 class QuietHooks(agent_mod.Hooks):
@@ -244,3 +246,89 @@ def test_confirm_timeout_is_recorded(env):
     ag = agent_mod.Agent(CFG, hooks=TimeoutHooks(), dry_run=False, client=client)
     s = ag.run("テスト")
     assert s["result"] == "stopped" and "時間切れ" in s["reason"]
+
+
+# ---- B: 前面ウィンドウの中だけで変化を見る / C: 確かめられない「完了」の警告 ----
+
+def with_monitor_noise(i):
+    """前面ウィンドウ（左上）は同じまま、右側の監視ツールの数字だけが毎回変わる画面。"""
+    from PIL import ImageDraw
+    im = solid((0, 0, 0))
+    ImageDraw.Draw(im).rectangle([1500, 100, 1500 + 40 * (i % 5 + 1), 400], fill=(255, 255, 255))
+    return im
+
+
+def rows_of(env, s):
+    d = env["tmp"] / s["dir"].replace("\\", "/").split("/")[-1]
+    return d, [json.loads(l) for l in (d / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+
+
+def test_noise_outside_window_counts_as_no_change(env):
+    env["front"]["rect"] = (0, 0, 1000, 800)
+    env["frames"] += [with_monitor_noise(i) for i in range(10)]
+    ag, client = make([J(action="type", text="テスト", target_app="メモ帳"),
+                       J(action="key", text="ctrl+a", target_app="メモ帳"),
+                       J(action="key", text="delete", target_app="メモ帳"),
+                       J(action="done", reason="削除完了")], dry_run=False)
+    s = ag.run("テスト")
+    assert "did NOT change" in client.calls[1]["prompt"]
+    assert client.calls[2]["thinking"] == "on"            # 変化なしが2回続いたので思考オン
+    # C: 完了と言っても、効かなかった入力・キーがあるので警告（結果は done のまま）
+    assert s["result"] == "done" and len(s["warnings"]) == 1
+    assert "入力「テスト」" in s["warnings"][0] and "ctrl+a" in s["warnings"][0]
+    d, rows = rows_of(env, s)
+    assert rows[1]["compared"] == "前面ウィンドウ内"
+    html = (d / "report.html").read_text(encoding="utf-8")
+    assert "完了（要確認）" in html and "要確認" in html
+
+
+def test_same_noise_without_rect_counts_as_change(env):
+    # 矩形が取れないときは従来どおり画面全体（数字の変化も「変わった」になる）
+    env["frames"] += [with_monitor_noise(i) for i in range(10)]
+    ag, client = make([J(action="type", text="テスト", target_app="メモ帳"), J(action="done")], dry_run=False)
+    s = ag.run("テスト")
+    assert "[screen changed]" in client.calls[1]["prompt"] and s["warnings"] == []
+
+
+def test_front_window_switch_counts_as_change(env):
+    env["front"]["rect"] = (0, 0, 1000, 800)
+    calc = winapi.WindowInfo(2, "電卓", "CalculatorApp.exe")
+
+    class SwitchOnAct(QuietHooks):
+        def status(self, state, text):
+            if state == "acting":
+                env["front"]["w"] = calc
+    client = FakeClient([J(action="open_app", text="メモ帳"), J(action="done")])
+    ag = agent_mod.Agent(CFG, hooks=SwitchOnAct(), dry_run=False, client=client)
+    s = ag.run("テスト")   # 画面の画像は同じでも、前面が切り替わったら「変わった」
+    assert "[screen changed]" in client.calls[1]["prompt"]
+    _, rows = rows_of(env, s)
+    assert rows[1]["compared"] == "前面ウィンドウが切り替わった" and s["warnings"] == []
+
+
+def test_effective_run_has_no_warning(env):
+    env["front"]["rect"] = (0, 0, 1000, 800)
+    env["frames"] += [solid((255 * (i % 2),) * 3) for i in range(6)]   # ウィンドウ内も毎回変わる（白黒交互）
+    ag, _ = make([J(action="type", text="テスト", target_app="メモ帳"), J(action="done")], dry_run=False)
+    assert ag.run("テスト")["warnings"] == []
+
+
+def test_dry_run_never_warns(env):
+    ag, _ = make([J(action="type", text="テスト", target_app="メモ帳"), J(action="done")])
+    assert ag.run("テスト")["warnings"] == []
+
+
+@pytest.mark.parametrize("history,expect", [
+    ([], ""),
+    ([{"action": "click", "changed": False, "label": "クリックA"},
+      {"action": "click", "changed": True, "label": "クリックB"}], ""),            # 試行錯誤のクリックは問わない
+    ([{"action": "click", "changed": True, "label": "クリックA"},
+      {"action": "click", "changed": False, "label": "クリックB"}], "クリックB"),   # 最後の操作が効いていない
+    ([{"action": "type", "changed": False, "label": "入力X"},
+      {"action": "click", "changed": True, "label": "クリック"}], "入力X"),         # 効かなかった入力
+    ([{"action": "type", "changed": None, "label": "入力X"},                         # ブロックされた行は対象外
+      {"label": "無効な返答", "changed": None}], ""),
+])
+def test_unverified_done(history, expect):
+    w = agent_mod.unverified_done(history)
+    assert (expect in w and w) if expect else w == ""

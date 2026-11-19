@@ -96,6 +96,12 @@ def resolve_app(name: str, apps: list[App]) -> App | None:
     """呼び名 -> 許可リストのアプリ。完全一致（大文字小文字・空白を無視）か、プロセス名との一致のみ。"""
     def norm(s):
         return re.sub(r"\s+", "", str(s)).lower()
+    # 前面アプリはモデルに「CalculatorApp.exe (電卓)」の形で伝えているので、その書き方をそのまま返してくることがある。
+    # 両方が同じアプリを指すときだけ受け付ける（フェーズ7の実地テストで、これがブロックされていた）。
+    m = re.fullmatch(r"\s*(.+?)\s*[(（]\s*(.+?)\s*[)）]\s*", str(name))
+    if m:
+        a, b = resolve_app(m.group(1), apps), resolve_app(m.group(2), apps)
+        return a if a is not None and a is b else None
     want = norm(name)
     for app in apps:
         if want in {norm(n) for n in app.names} or want in {norm(p) for p in app.process} \

@@ -45,11 +45,12 @@ class Session:
             (self.dir / "model" / f"step-{row['step']:02d}.json").write_text(
                 json.dumps(model_record, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
-    def finish(self, result: str, reason: str = "") -> dict:
+    def finish(self, result: str, reason: str = "", warnings: list[str] | None = None) -> dict:
         secs = round(time.time() - self.t0, 1)
         model_secs = [s["model_secs"] for s in self.steps if s.get("model_secs") is not None]
         summary = {
             "task": self.task, "source": self.source, "result": result, "reason": reason,
+            "warnings": list(warnings or []),
             "steps": len(self.steps), "secs": secs,
             "thinking_steps": sum(1 for s in self.steps if s.get("thinking") not in (None, "off")),
             "model_secs_total": round(sum(model_secs), 1),
@@ -76,11 +77,14 @@ class Session:
                 f'思考 {r["thinking"]}' if r.get("thinking") else "",
                 f'出力 {r["completion_tokens"]} tok' if r.get("completion_tokens") else "",
                 f'前面 {r["front_app"]}' if r.get("front_app") else "",
-                {True: "直前の操作で画面が変化", False: "直前の操作で画面が変化せず"}.get(r.get("changed_before"), ""),
+                {True: "直前の操作で画面が変化", False: "直前の操作で画面が変化せず"}.get(r.get("changed_before"), "")
+                + (f'（{r["compared"]}）' if r.get("compared") and r.get("changed_before") is not None else ""),
                 "dry-run" if r.get("dry_run") else "",
             ] if x)
             notes = "".join(f'<p class="note">{e(str(n))}</p>' for n in r.get("notes", []))
             err = f'<p class="err">{e(str(r["error"]))}</p>' if r.get("error") else ""
+            if r.get("warning"):
+                err += f'<p class="warn">⚠ {e(str(r["warning"]))}</p>'
             detail = f'<p class="detail">{e(r["detail"])}</p>' if r.get("detail") else ""
             raw = f'<details><summary>モデルの返答</summary><pre>{e(str(r.get("raw", "")))}</pre></details>' \
                 if r.get("raw") else ""
@@ -91,6 +95,10 @@ class Session:
         final = '<section><h3>終了時の画面</h3><img src="final.jpg"></section>' \
             if self.path("final.jpg").exists() else ""
         audio = '<audio controls src="audio.wav"></audio>' if self.path("audio.wav").exists() else ""
+        warn_box = "".join(f'<div class="warnbox"><p class="warn">⚠ 要確認: {e(w)}</p></div>'
+                           for w in s.get("warnings", []))
+        if s.get("warnings") and s["result"] == "done":
+            result_ja = "完了（要確認）"
         page = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>実行レポート</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -101,7 +109,8 @@ h1{{font-size:22px;margin:0 0 4px}} .badge{{color:#fff;padding:2px 10px;border-r
 .done{{background:var(--ok)}} .fail{{background:var(--ng)}} .stopped{{background:var(--warn)}}
 section{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:14px 0}}
 h3{{margin:0 0 4px;font-size:16px}} .reason{{margin:2px 0}} .meta,.detail,.note{{color:var(--mute);font-size:13px;margin:2px 0}}
-.err{{color:var(--ng);margin:4px 0}} img{{width:100%;border-radius:6px;border:1px solid var(--line);margin-top:8px}}
+.err{{color:var(--ng);margin:4px 0}} .warn{{color:var(--warn);font-weight:bold;margin:4px 0}}
+.warnbox{{border:2px solid var(--warn);border-radius:10px;padding:8px 12px;margin:10px 0}} img{{width:100%;border-radius:6px;border:1px solid var(--line);margin-top:8px}}
 pre{{white-space:pre-wrap;word-break:break-all;font-size:12px}} a{{color:inherit;font-size:13px}}
 </style></head><body>
 <h1>{e(s['task'])}</h1>
@@ -109,5 +118,5 @@ pre{{white-space:pre-wrap;word-break:break-all;font-size:12px}} a{{color:inherit
 &nbsp;{s['steps']} ステップ · {s['secs']} 秒 · モデル合計 {s['model_secs_total']} 秒 · 思考あり {s['thinking_steps']} 回
 {(' · ' + e(s['reason'])) if s['reason'] else ''}</p>
 <p class="meta">{e(' · '.join(f'{k}={v}' for k, v in self.meta.items()))}</p>
-{audio}{''.join(sections)}{final}</body></html>"""
+{warn_box}{audio}{''.join(sections)}{final}</body></html>"""
         self.path("report.html").write_text(page, encoding="utf-8")

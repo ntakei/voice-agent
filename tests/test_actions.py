@@ -92,6 +92,11 @@ def test_resolve_app():
     assert actions.resolve_app("calculatorapp.exe", APPS).launch == "calc.exe"
     assert actions.resolve_app("notepad", APPS).launch == "notepad.exe"
     assert actions.resolve_app("メモ", APPS) is None  # 部分一致は許さない
+    # 前面アプリの表示形式「プロセス名 (呼び名)」をそのまま返してきた場合
+    assert actions.resolve_app("CalculatorApp.exe (電卓)", APPS).launch == "calc.exe"
+    assert actions.resolve_app("Notepad.exe（メモ帳）", APPS).launch == "notepad.exe"
+    assert actions.resolve_app("CalculatorApp.exe (メモ帳)", APPS) is None   # 食い違うものは受け付けない
+    assert actions.resolve_app("cmd.exe (電卓)", APPS) is None
 
 
 # ---- 座標変換（送った画像 px -> 実画面 px）----

@@ -41,8 +41,28 @@ def for_model(img: Image.Image, width: int) -> Image.Image:
     return img.resize((width, round(img.height * width / img.width)), Image.LANCZOS)
 
 
-def diff_pixels(a: Image.Image, b: Image.Image, ignore=None) -> int:
-    """2枚の画像の差（縮小したグレー画像で、変化した画素の数）。ignore の領域は数えない。"""
+def _region_box(size: tuple[int, int], region) -> tuple[int, int, int, int] | None:
+    """実画面のピクセル矩形 (left, top, right, bottom) を、比較用の縮小画像上の矩形にする。
+
+    画面からはみ出す部分は切り詰める。画面上に残らない（最小化など）なら None（=画面全体で比べる）。
+    """
+    if not region:
+        return None
+    w, h = size
+    W, H = _DIFF_SIZE
+    l, t, r, b = max(region[0], 0), max(region[1], 0), min(region[2], w), min(region[3], h)
+    if r - l < 2 or b - t < 2:
+        return None
+    return (int(l * W / w), int(t * H / h), max(int(l * W / w) + 1, round(r * W / w)),
+            max(int(t * H / h) + 1, round(b * H / h)))
+
+
+def diff_pixels(a: Image.Image, b: Image.Image, ignore=None, region=None) -> int:
+    """2枚の画像の差（縮小したグレー画像で、変化した画素の数）。
+
+    ignore の領域（画面に対する割合）は数えない。region（実画面のピクセル矩形）を渡すと、その中だけを数える。
+    縮小の倍率は region があってもなくても同じなので、閾値の意味は変わらない。
+    """
     ga = a.convert("L").resize(_DIFF_SIZE)
     gb = b.convert("L").resize(_DIFF_SIZE)
     diff = ImageChops.difference(ga, gb).point(lambda v: 255 if v > _DIFF_LEVEL else 0)
@@ -53,21 +73,29 @@ def diff_pixels(a: Image.Image, b: Image.Image, ignore=None) -> int:
         d = ImageDraw.Draw(diff)
         for x1, y1, x2, y2 in ignore:
             d.rectangle([x1 * W, y1 * H, x2 * W, y2 * H], fill=0)
+    box = _region_box(a.size, region)
+    if box:
+        diff = diff.crop(box)
     return diff.histogram()[255]
 
 
-def changed(a: Image.Image | None, b: Image.Image | None, min_pixels: int = 30, ignore=None) -> bool:
-    """ほぼ同じ画面なら False。誤って「変化なし」とすると、効いたクリックを捨ててしまうので閾値は小さめ。"""
+def changed(a: Image.Image | None, b: Image.Image | None, min_pixels: int = 30, ignore=None, region=None) -> bool:
+    """ほぼ同じ画面なら False。誤って「変化なし」とすると、効いたクリックを捨ててしまうので閾値は小さめ。
+
+    region を渡すと、その範囲（前面アプリのウィンドウ）の中だけで比べる。
+    """
     if a is None or b is None:
         return True
-    return diff_pixels(a, b, ignore) >= min_pixels
+    return diff_pixels(a, b, ignore, region) >= min_pixels
 
 
 def settle(stop_event: threading.Event | None = None, min_wait: float = 0.15, max_wait: float = 1.5,
-           poll: float = 0.12, quiet_pixels: int = 150, ignore=None) -> Image.Image | None:
+           poll: float = 0.12, quiet_pixels: int = 150, ignore=None, region=None) -> Image.Image | None:
     """固定の sleep ではなく、画面の変化が止まるまで待つ。落ち着いた（または max_wait に達した）画面を返す。
 
     小さな動き（点滅するカーソル、スピナー）は quiet_pixels 未満なら落ち着いたとみなす。
+    region は「比べる範囲を返す関数」（前面ウィンドウの矩形。None なら画面全体）。
+    他のウィンドウで数字が動き続けていても、待ち時間が最大まで延びないようにするため。
     stop_event が立ったら None を返す。
     """
     stop_event = stop_event or threading.Event()
@@ -79,7 +107,7 @@ def settle(stop_event: threading.Event | None = None, min_wait: float = 0.15, ma
         if stop_event.wait(poll):
             return None
         cur = capture()
-        if diff_pixels(prev, cur, ignore) < quiet_pixels:
+        if diff_pixels(prev, cur, ignore, region() if region else None) < quiet_pixels:
             return cur
         prev = cur
     return prev

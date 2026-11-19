@@ -68,3 +68,91 @@ safety:
                         SearchHost.exe, StartMenuExperienceHost.exe, explorer.exe]
   confirm_timeout_secs: 30  # 確認ダイアログに答えがなければ「いいえ」
   stop_key: esc             # このキーで即時停止（人が押したときだけ。プログラムが送ったキーは無視）
+
+# 音声入出力（フェーズ7）。--voice で使う
+voice:
+  ptt_key: f9               # 押している間だけ録音するキー（f1〜f24, pause, scroll_lock, insert, right_ctrl など）
+  ptt_suppress: true        # このキーを前面アプリに渡さない（アプリ側で F9 が別の意味を持っていても動かないように）
+  input_device: null        # マイク（null = Windows の既定。番号か名前の一部で指定）
+  mic_always_on: true       # 音声モードの間マイクを開いたままにする（押した瞬間の話し始めが切れないように）
+  preroll_secs: 0.5         # キーを押す直前の何秒分を録音に含めるか（mic_always_on のときだけ）
+  min_secs: 0.4             # これより短い録音は無視（押し間違い）
+  max_secs: 30              # これより長い録音は打ち切り
+  min_level: 0.003          # 音量（RMS）がこれ未満なら無音とみなす
+  stt:
+    model: small            # small / large-v3-turbo など（models/ に置く。初回だけダウンロード）
+    compute_type: int8
+    cpu_threads: 0          # 0 = 自動
+    beam_size: 5
+    vad_filter: true        # 無音部分を除いてから認識する（無音での幻の文を減らす）
+    # 認識の手がかり: 日本人が PC 操作で口にする英語・カタカナ語の一覧（英語の固有名詞の認識がよくなる）。
+    # - 書いた表記で出やすくなる（例: 「クローム」ではなく「Chrome」）。エージェントのモデルはどちらの表記でも理解する
+    # - 先頭ほど優先。合計が max_prompt_tokens を超えた分は使わない（起動時に表示する）
+    #   Whisper の手がかりは約 223 トークンまでで、長いほど手がかりの言葉をそのまま返す誤りも増えるため
+    # - 文（「〜を操作します」など）は書かない: 聞き取れないとき Whisper がその文を返し、指示として実行されてしまう
+    # - 展示で使うサイト名・製品名は、先頭のほうに足す
+    max_prompt_tokens: 150
+    vocabulary:
+      # ブラウザ・検索・よく使うサイト（Whisper がカタカナ崩れや聞き違いを起こしやすいもの）
+      - Chrome
+      - Edge
+      - Google
+      - Yahoo! JAPAN
+      - YouTube
+      - GitHub
+      - NVIDIA
+      - ChatGPT
+      - Wikipedia
+      - Amazon
+      # Microsoft 365・コミュニケーション
+      - Microsoft
+      - Windows
+      - Excel
+      - Word
+      - PowerPoint
+      - Outlook
+      - Teams
+      - Gmail
+      - Zoom
+      - Slack
+      # 画面の部品・操作（カタカナ語）
+      - Go to file
+      - URL
+      - PDF
+      - アドレスバー
+      - 検索ボックス
+      - タブ
+      - ダウンロード
+      - ログイン
+      # このデモで開けるアプリ
+      - メモ帳
+      - 電卓
+      - ペイント
+      # ここから下は上限を超えると使われない（優先度低）
+      - LINE
+      - Instagram
+      - 楽天
+      - OneDrive
+      - Copilot
+      - Wi-Fi
+      - Bluetooth
+      - USB
+      - AI
+      - ウィンドウ
+      - メニュー
+      - ボタン
+      - アイコン
+      - スクロール
+      - ダブルクリック
+      - コピー
+      - ペースト
+  tts:
+    # sapi:    Windows の SAPI5 を直接使う（既定）
+    # pyttsx3: pyttsx3 経由。この PC では2回目以降の読み上げが途中で切れた（フェーズ7で確認）
+    # none:    読み上げない
+    engine: sapi
+    voice: Haruka           # 音声名の一部（なければ日本語の音声 → 既定）
+    rate: 0                 # 話す速さ -10（遅い）〜 10（速い）
+    volume: 1.0             # 0.0〜1.0
+    # 読み上げる種類: start（わかりました）/ reason（各操作の理由）/ confirm（確認のお願い）/ blocked / result（結果）
+    speak: [start, reason, confirm, blocked, result]

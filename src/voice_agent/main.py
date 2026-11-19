@@ -1,8 +1,9 @@
-"""起動口（テキスト入力）。
+"""起動口（テキスト入力 / 音声入力）。
 
   python -m uv run voice-agent "電卓で 12 かける 34 を計算して"      # 1回だけ実行
   python -m uv run voice-agent                                      # 対話モード（タスクを何度でも入力）
   python -m uv run voice-agent --live "…"                           # 実際にマウス・キーボードを操作する
+  python -m uv run voice-agent --voice --live                       # 音声モード（F9 を押しながら話す）
 
 既定は config.yaml の agent.dry_run（true なら操作せず表示だけ）。
 """
@@ -16,10 +17,16 @@ from .stopkey import StopKey
 
 
 class ConsoleHooks(Hooks):
-    """コンソール表示 + 確認ダイアログ。"""
+    """コンソール表示 + 確認ダイアログ（+ 読み上げ）。"""
 
-    def __init__(self, timeout_secs: float = 30):
+    def __init__(self, timeout_secs: float = 30, speaker=None, speak_kinds=None):
         self.timeout_secs = timeout_secs
+        self.speaker = speaker
+        self.speak_kinds = set(speak_kinds) if speak_kinds is not None else None   # None = すべて読む
+
+    def say(self, text: str, kind: str = "info") -> None:
+        if self.speaker and (self.speak_kinds is None or kind in self.speak_kinds):
+            self.speaker.say(text, interrupt=kind in ("confirm", "result", "blocked"))
 
     def confirm(self, question: str) -> bool:
         print(question, flush=True)
@@ -35,6 +42,9 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="voice-agent", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("task", nargs="*", help="タスク（省略すると対話モード）")
+    ap.add_argument("--voice", action="store_true", help="音声モード（押して話すキーを押しながら話す）")
+    ap.add_argument("--stt-model", help="音声認識のモデル（例: small, large-v3-turbo）。既定は config の voice.stt.model")
+    ap.add_argument("--no-tts", action="store_true", help="読み上げをしない")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--live", action="store_true", help="実際に操作する（dry-run を解除）")
     g.add_argument("--dry-run", action="store_true", help="操作せず表示だけ（config より優先）")
@@ -50,7 +60,13 @@ def main(argv=None) -> None:
     cfg = config.load()
     dry = True if args.dry_run else (False if args.live else None)
     sc = cfg.get("safety", {})
-    hooks = ConsoleHooks(sc.get("confirm_timeout_secs", 30))
+    vc = cfg.get("voice") or {}
+    speaker = None
+    if args.voice and not args.no_tts:
+        from .tts import make_speaker
+        speaker = make_speaker(cfg)
+    hooks = ConsoleHooks(sc.get("confirm_timeout_secs", 30), speaker,
+                         (vc.get("tts") or {}).get("speak", ["start", "reason", "confirm", "blocked", "result"]))
     agent = Agent(cfg, hooks=hooks, dry_run=dry, max_steps=args.max_steps,
                   think_normal=args.think_normal, think_stuck=args.think_stuck)
     stop_key = sc.get("stop_key", "esc")
@@ -68,6 +84,9 @@ def main(argv=None) -> None:
         print(f"結果: {summary['result']}  {summary['steps']} ステップ  {summary['secs']} 秒")
         print(f"レポート: {os.path.join(summary['dir'], 'report.html')}")
 
+    if args.voice:
+        run_voice(args, cfg, agent, hooks, speaker)
+        return
     if args.task:
         run_one(" ".join(args.task))
         return
@@ -80,6 +99,46 @@ def main(argv=None) -> None:
         if not task:
             break
         run_one(task)
+
+
+def run_voice(args, cfg, agent, hooks, speaker) -> None:
+    from . import stt
+    from .ptt import PushToTalk
+    from .recorder import Recorder
+    from .tts import Speaker
+    from .voice import VoiceLoop
+    vc = cfg.get("voice") or {}
+    if args.stt_model:
+        cfg = {**cfg, "voice": {**vc, "stt": {**(vc.get("stt") or {}), "model": args.stt_model}}}
+    tr = stt.make_transcriber(cfg)
+    print(f"音声認識モデル {tr.model_name}（{tr.compute_type}, CPU）を読み込んでいます…", flush=True)
+    tr.load()
+    tr.transcribe(__import__("numpy").zeros(stt.RATE, "float32"))   # 1回目が遅くならないよう空回し
+    print(f"  読み込み {tr.load_secs:.1f} 秒", flush=True)
+    if tr.vocabulary:
+        n = len(tr.vocabulary) - len(tr.vocab_dropped)
+        print(f"  認識の手がかり: {n} 語" + (f"（上限を超えたので使わない: {'、'.join(tr.vocab_dropped)}）"
+                                            if tr.vocab_dropped else ""), flush=True)
+    device = vc.get("input_device")
+    print(f"マイク: {Recorder.device_name(device)}")
+    if speaker is not None:
+        print(f"読み上げ: {getattr(speaker, 'voice_name', '') or '既定の音声'}")
+    ptt = PushToTalk(vc.get("ptt_key", "f9"), suppress=bool(vc.get("ptt_suppress", True))).start()
+    mic = Recorder(device, max_secs=float(vc.get("max_secs", 30)), preroll_secs=float(vc.get("preroll_secs", 0.5)),
+                   always_on=bool(vc.get("mic_always_on", True)))
+    if mic.always_on:
+        mic.open()   # 話し始めが切れないよう、音声モードの間はマイクを開いておく
+    loop = VoiceLoop(cfg, agent, hooks, speaker or Speaker(), tr, ptt, mic)
+    try:
+        loop.run()
+    except KeyboardInterrupt:
+        print("\n終了します。")
+    finally:
+        loop.running = False
+        ptt.stop()
+        mic.close()
+        if speaker is not None:
+            speaker.close()
 
 
 if __name__ == "__main__":

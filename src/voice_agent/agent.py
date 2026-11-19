@@ -29,12 +29,29 @@ class Hooks:
         """state: start | looking | thinking | acting | blocked | done | fail | stopped"""
         print(text, flush=True)
 
-    def say(self, text: str) -> None:
-        """読み上げ（フェーズ7で TTS をつなぐ）。"""
+    def say(self, text: str, kind: str = "info") -> None:
+        """読み上げ。kind: start | reason | confirm | blocked | result（読み上げる種類を選べるように）。"""
 
     def confirm(self, question: str) -> bool:
         """人間の確認。True なら実行してよい。既定（つながっていない場合）は拒否。"""
         return False
+
+
+def unverified_done(history: list[dict]) -> str:
+    """モデルが done と言ったとき、効果を確かめられない操作があれば警告文を返す（なければ ""）。
+
+    「完了」はモデルの自己申告なので、次の操作を疑う（結果は書き換えず、警告だけ出す）:
+    - 画面が変わらなかった入力・キー操作（内容を変えるはずの操作）
+    - done の直前の操作で、画面が変わらなかったもの
+    """
+    done_actions = [h for h in history if h.get("action")]
+    suspects = [h for h in done_actions if h["changed"] is False and h["action"] in ("type", "key")]
+    if done_actions and done_actions[-1]["changed"] is False and done_actions[-1] not in suspects:
+        suspects.append(done_actions[-1])
+    if not suspects:
+        return ""
+    labels = "、".join(h["label"] for h in suspects)
+    return f"完了と判断されましたが、画面が変わらなかった操作があります（{labels}）。結果を確認してください。"
 
 
 class Agent:
@@ -94,13 +111,33 @@ class Agent:
             raise box["e"]
         return box["r"]
 
+    @staticmethod
+    def _front_rect():
+        f = winapi.foreground()
+        return winapi.window_rect(f.hwnd) if f else None
+
+    @staticmethod
+    def _compare(prev_img, img, prev_front: int | None, front: winapi.WindowInfo | None) -> tuple[bool | None, str]:
+        """直前の操作で画面が変わったか。前面アプリのウィンドウの中だけで比べる。
+
+        他のウィンドウ（時計・監視ツール・通知など）の変化で「変わった」と誤判定しないため。
+        前面ウィンドウ自体が切り替わったら「変わった」。矩形が取れなければ画面全体で比べる。
+        """
+        if prev_img is None:
+            return None, ""
+        if prev_front is not None and front is not None and front.hwnd != prev_front:
+            return True, "前面ウィンドウが切り替わった"
+        region = winapi.window_rect(front.hwnd) if front else None
+        return screen.changed(prev_img, img, region=region), ("前面ウィンドウ内" if region else "画面全体")
+
     def _front_name(self, front: winapi.WindowInfo | None) -> str:
         if not front:
             return ""
         app = actions.app_for_process(front.exe, self.apps)
         return f"{front.exe} ({app.names[0]})" if app else front.exe
 
-    def run(self, task: str, source: str = "text") -> dict:
+    def run(self, task: str, source: str = "text", audio_wav: bytes | None = None,
+            extra_meta: dict | None = None) -> dict:
         self.stop_event.clear()
         ac = self.cfg.get("agent", {})
         sc = self.cfg.get("screen", {})
@@ -112,7 +149,9 @@ class Agent:
         s = Session(task, source, meta={
             "model": self.cfg["model"]["name"], "dry_run": self.dry_run, "max_steps": self.max_steps,
             "think_normal": self.think_normal, "think_stuck": self.think_stuck,
-            "image_width": width, "screen": f"{screen_size[0]}x{screen_size[1]}"})
+            "image_width": width, "screen": f"{screen_size[0]}x{screen_size[1]}", **(extra_meta or {})})
+        if audio_wav:
+            s.path("audio.wav").write_bytes(audio_wav)   # 音声で指示したとき、レポートで聞き直せるように
         self.session = s
 
         history: list[dict] = []          # {"line": str, "changed": bool|None}
@@ -120,12 +159,13 @@ class Agent:
         blocked_labels: list[str] = []
         fails: dict[tuple, int] = {}
         done_sigs: list[tuple] = []
-        prev_img, prev_sig, next_img = None, None, None
+        prev_img, prev_sig, next_img, prev_front = None, None, None, None
+        warnings: list[str] = []
         no_change_run = bad_json_run = blocked_run = 0
         result, reason = "fail", f"最大ステップ数（{self.max_steps}）に達した"
 
         self.hooks.status("start", f"タスク: {task}" + ("（dry-run）" if self.dry_run else ""))
-        self.hooks.say("わかりました。")
+        self.hooks.say("わかりました。", "start")
         try:
             for step in range(1, self.max_steps + 1):
                 if self.stop_event.is_set():
@@ -133,7 +173,10 @@ class Agent:
                 self.failsafe_check()
                 img = next_img if next_img is not None else screen.capture()
                 next_img = None
-                changed = screen.changed(prev_img, img) if prev_img is not None else None
+                front = winapi.foreground()
+                front_name = self._front_name(front)
+                changed, compare = self._compare(prev_img, img, prev_front, front)
+                prev_front = front.hwnd if front else None
                 if prev_sig is not None and history:
                     history[-1]["changed"] = changed
                     if changed is False and not self.dry_run:
@@ -147,8 +190,6 @@ class Agent:
                 prev_img = img
 
                 sent = screen.for_model(img, width)
-                front = winapi.foreground()
-                front_name = self._front_name(front)
                 stuck = (no_change_run >= ac.get("think_after_no_change", 2)
                          or bad_json_run >= ac.get("think_after_bad_json", 2)
                          or blocked_run >= ac.get("think_after_blocked", 2))
@@ -166,6 +207,8 @@ class Agent:
                 sent.save(s.path(sent_name), quality=quality)
                 base = {"step": step, "thinking": thinking, "front_app": front_name, "changed_before": changed,
                         "dry_run": self.dry_run, "sent": sent_name}
+                if compare:
+                    base["compared"] = compare
                 try:
                     r = self._call(self.client.chat,
                                    [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
@@ -213,6 +256,11 @@ class Agent:
 
                 t = a["action"]
                 if t in ("done", "fail"):
+                    if t == "done" and not self.dry_run:
+                        warn = unverified_done(history)
+                        if warn:
+                            row["warning"] = warn
+                            warnings.append(warn)
                     s.log_step(row, record)
                     result, reason = ("done", a.get("reason", "")) if t == "done" else ("fail", a.get("reason", ""))
                     break
@@ -253,7 +301,7 @@ class Agent:
                     s.log_step(row, record)
                     self.hooks.status("blocked", f"[{step:02d}] ブロック: {d.reason}")
                     if d.kind == safety.STOP:
-                        self.hooks.say("この操作はできません。")
+                        self.hooks.say("この操作はできません。", "blocked")
                         result, reason = "stopped", d.reason
                         break
                     prev_sig = None
@@ -267,7 +315,7 @@ class Agent:
                         question = (f"次の操作を実行してよいですか？\n\n{label}\n"
                                     f"理由: {a.get('reason', '')}\n\n確認が必要な理由: {d.reason}")
                         self.hooks.status("confirm", f"[{step:02d}] 確認待ち: {label}（{d.reason}）")
-                        self.hooks.say("この操作を実行してよいか、確認してください。")
+                        self.hooks.say("この操作を実行してよいか、確認してください。", "confirm")
                         ok = bool(self.hooks.confirm(question))
                         row["confirmed"] = ok
                         how = getattr(self.hooks, "last_answer", "")
@@ -285,7 +333,7 @@ class Agent:
                     raise Stopped()
                 self.hooks.status("acting", f"[{step:02d}] {r['secs']:.1f}s {'(思考 ' + thinking + ') ' if thinking != 'off' else ''}"
                                             f"{label} — {a.get('reason', '')}")
-                self.hooks.say(a.get("reason", ""))
+                self.hooks.say(a.get("reason", ""), "reason")
                 try:
                     res = ex.execute(a, sent.size)
                 except pyautogui.FailSafeException:
@@ -308,7 +356,7 @@ class Agent:
 
                 if not self.dry_run:
                     wait = ac.get("settle_max_open_app", 4.0) if t == "open_app" else ac.get("settle_max", 1.5)
-                    next_img = screen.settle(self.stop_event, max_wait=wait)
+                    next_img = screen.settle(self.stop_event, max_wait=wait, region=self._front_rect)
                     if next_img is None:
                         s.log_step(row, record)
                         raise Stopped()
@@ -319,7 +367,7 @@ class Agent:
                             line += f" — but {now.exe if now else 'another app'} is still in front"
                             row["notes"].append(f"open_app 後も前面は {now.describe() if now else '不明'}")
                 s.log_step(row, record)
-                history.append({"line": line, "changed": None, "label": label})
+                history.append({"line": line, "changed": None, "label": label, "action": t})
                 prev_sig = sig
         except Stopped:
             result, reason = "stopped", "停止要求（Esc）"
@@ -333,9 +381,12 @@ class Agent:
             final.save(s.path("final.jpg"), quality=85)
         except Exception:  # noqa: BLE001
             pass
-        summary = s.finish(result, reason)
+        summary = s.finish(result, reason, warnings=warnings)
         msg = {"done": "完了しました。", "fail": "うまくできませんでした。", "stopped": "停止しました。"}[result]
         if result != "stopped":
-            self.hooks.say(msg)
+            self.hooks.say("完了しましたが、結果を確認してください。" if warnings and result == "done" else msg,
+                           "result")
         self.hooks.status(result, f"{msg} {reason}".strip())
+        for w in warnings:
+            self.hooks.status("warn", f"注意: {w}")
         return summary

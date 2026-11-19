@@ -63,6 +63,17 @@ def foreground() -> WindowInfo | None:
     return window_info(hwnd)
 
 
+def window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
+    """ウィンドウの矩形（実画面のピクセル。left, top, right, bottom）。最小化中や取得できなければ None。"""
+    try:
+        if not hwnd or win32gui.IsIconic(hwnd):
+            return None
+        l, t, r, b = win32gui.GetWindowRect(hwnd)
+    except Exception:
+        return None
+    return (l, t, r, b) if r > l and b > t else None
+
+
 def is_cloaked(hwnd: int) -> bool:
     """見えない UWP ウィンドウ（別の仮想デスクトップや待機中のもの）なら True。"""
     val = ctypes.c_int(0)
