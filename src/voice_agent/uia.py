@@ -79,3 +79,40 @@ def invoke_at(x: int, y: int) -> str:
     except Exception:  # noqa: BLE001  押せなければ何もしない（呼び出し側はマウスのクリックの結果のまま扱う）
         return ""
     return ""
+
+
+# 画面の言葉として集める要素の種類（音声認識の補正の手がかり）
+_WORD_TYPES = {"HyperlinkControl", "ButtonControl", "TabItemControl", "MenuItemControl", "ListItemControl",
+               "SplitButtonControl", "TreeItemControl"}
+
+
+def visible_words(hwnd: int, limit: int = 80, budget_secs: float = 0.8, max_nodes: int = 800) -> list[str]:
+    """ウィンドウの中のボタン・リンク・タブなどの名前（重複なし、短いもの、上から順）。
+
+    ブラウザのページは要素が多いので、時間（budget_secs）と数（max_nodes）で打ち切る。
+    取れなければ空のリスト（補正は画面の言葉なしで行う）。
+    """
+    import time
+    words: list[str] = []
+    seen: set[str] = set()
+    end = time.time() + budget_secs
+    try:
+        with auto.UIAutomationInitializerInThread():
+            root = auto.ControlFromHandle(hwnd)
+            queue = [root] if root else []
+            nodes = 0
+            while queue and time.time() < end and nodes < max_nodes and len(words) < limit:
+                ctrl = queue.pop(0)
+                nodes += 1
+                try:
+                    if ctrl.ControlTypeName in _WORD_TYPES and not ctrl.IsOffscreen:
+                        name = " ".join((ctrl.Name or "").split())
+                        if 1 < len(name) <= 30 and name not in seen:
+                            seen.add(name)
+                            words.append(name)
+                    queue.extend(ctrl.GetChildren())
+                except Exception:  # noqa: BLE001  途中で消えた要素などは飛ばす
+                    continue
+    except Exception:  # noqa: BLE001
+        return words
+    return words

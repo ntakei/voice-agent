@@ -36,6 +36,27 @@ class Hooks:
         """人間の確認。True なら実行してよい。既定（つながっていない場合）は拒否。"""
         return False
 
+    def ui(self, state: str, main: str, sub: str = "") -> None:
+        """画面上の状態表示（overlay.py）。state は overlay.STATES のキー。既定は何もしない。"""
+
+
+def friendly(a: dict, clicked=None) -> str:
+    """状態表示用の、操作の短い説明（座標は出さない）。"""
+    t = a.get("action")
+    name = (clicked.name.strip() if clicked is not None and clicked.name else "")
+    if t in ("click", "double_click"):
+        verb = "クリック" if t == "click" else "ダブルクリック"
+        return f"{verb}「{name[:24]}」" if name else verb
+    if t == "type":
+        return f"入力「{str(a.get('text', ''))[:24]}」"
+    if t == "key":
+        return f"キー {a.get('text', '')}"
+    if t == "scroll":
+        return "スクロール " + ("上" if a.get("dy", 0) > 0 else "下")
+    if t == "open_app":
+        return f"{a.get('text', '')} を開く"
+    return str(t)
+
 
 def unverified_done(history: list[dict]) -> str:
     """モデルが done と言ったとき、効果を確かめられない操作があれば警告文を返す（なければ ""）。
@@ -202,7 +223,12 @@ class Agent:
         give_up = int(ac.get("give_up_after_blocks", 4))
         result, reason = "fail", f"最大ステップ数（{self.max_steps}）に達した"
 
+        note = ""
+        if source == "voice":
+            voc = ((self.cfg.get("voice") or {}).get("stt") or {}).get("vocabulary") or []
+            note = prompts.speech_note((extra_meta or {}).get("heard", ""), task, [str(v) for v in voc][:40])
         self.hooks.status("start", f"タスク: {task}" + ("（dry-run）" if self.dry_run else ""))
+        self.hooks.ui("start", task, "わかりました" + ("（dry-run: 操作はしません）" if self.dry_run else ""))
         self.hooks.say("わかりました。", "start")
         interrupted = False
         try:
@@ -245,10 +271,13 @@ class Agent:
                 lines = [h["line"] + {True: "  [screen changed]", False: "  [screen did NOT change]"}.get(h["changed"], "")
                          for h in recent]
                 prompt = prompts.user_prompt(task, lines, front_name, changed if prev_sig else None,
-                                             blocked_labels, first_index=len(history) - len(recent) + 1)
+                                             blocked_labels, first_index=len(history) - len(recent) + 1, note=note)
                 system = prompts.system_prompt(sent.size, [a.names[0] for a in self.apps])
                 self.hooks.status("thinking" if stuck else "looking",
                                   f"[{step:02d}] {'行き詰まったので考え直しています…' if stuck else '画面を見ています…'}")
+                self.hooks.ui("thinking" if stuck else "looking",
+                              "考え直しています…" if stuck else "画面を見ています…",
+                              f"{task} ・ ステップ {step}/{self.max_steps}")
 
                 sent_name, marked_name = f"step-{step:02d}-sent.jpg", f"step-{step:02d}-marked.jpg"
                 sent.save(s.path(sent_name), quality=quality)
@@ -381,6 +410,7 @@ class Agent:
                     history.append({"line": f"{label} -> BLOCKED: {d.reason}", "changed": None, "label": label})
                     s.log_step(row, record)
                     self.hooks.status("blocked", f"[{step:02d}] ブロック: {d.reason}")
+                    self.hooks.ui("blocked", "この操作はしません", d.reason)
                     if d.kind == safety.STOP:
                         self.hooks.say("この操作はできません。", "blocked")
                         result, reason = "stopped", d.reason
@@ -396,6 +426,8 @@ class Agent:
                         question = (f"次の操作を実行してよいですか？\n\n{label}\n"
                                     f"理由: {a.get('reason', '')}\n\n確認が必要な理由: {d.reason}")
                         self.hooks.status("confirm", f"[{step:02d}] 確認待ち: {label}（{d.reason}）")
+                        self.hooks.ui("confirm", "確認してください",
+                                      f"ダイアログで答えてください ・ {friendly(a, d.clicked)}（{d.reason}）")
                         self.hooks.say("この操作を実行してよいか、確認してください。", "confirm")
                         ok = bool(self.hooks.confirm(question))
                         row["confirmed"] = ok
@@ -432,6 +464,8 @@ class Agent:
                 self.hooks.status("acting", f"[{step:02d}] {r['secs']:.1f}s {'(思考 ' + thinking + ') ' if thinking != 'off' else ''}"
                                             f"{label} — {a.get('reason', '')}")
                 self.hooks.say(a.get("reason", ""), "reason")
+                self.hooks.ui("acting", friendly(a, d.clicked),
+                              f"{a.get('reason', '')} ・ ステップ {step}/{self.max_steps}")
                 clicked_win = winapi.root_window_at(*point) if point and t in actions.CLICKS else None
                 is_link = (t == "click" and d.clicked is not None and d.clicked.control_type == "HyperlinkControl"
                            and front is not None)
@@ -528,6 +562,10 @@ class Agent:
             self.hooks.say("完了しましたが、結果を確認してください。" if warnings and result == "done" else msg,
                            "result")
         self.hooks.status(result, f"{msg} {reason}".strip())
+        if warnings and result == "done":
+            self.hooks.ui("warn", "完了しました（結果を確認してください）", warnings[0])
+        else:
+            self.hooks.ui(result, msg.rstrip("。"), reason)
         for w in warnings:
             self.hooks.status("warn", f"注意: {w}")
         if interrupted:

@@ -66,11 +66,13 @@ class Recorder:
         self._frames = 0
         self._ring: collections.deque[np.ndarray] = collections.deque()
         self._ring_frames = 0
+        self.last_level = 0.0
 
     # ---- マイク ----
 
     def _callback(self, indata, frames, time_info, status):
         chunk = indata[:, 0].copy()
+        self.last_level = level(chunk)          # 状態表示の声の大きさのバー用
         with self._lock:
             if self._recording:
                 if self._frames < self.max_secs * self._rate:

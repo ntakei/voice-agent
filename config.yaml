@@ -5,7 +5,8 @@
 #   agent   … 操作ループ（dry-run、最大ステップ、行き詰まり対策）
 #   apps    … open_app で開いてよいアプリの許可リスト
 #   safety  … 安全ルール（確認・拒否。コードで強制する）
-#   voice   … 音声入出力（押して話すキー、音声認識、読み上げ）
+#   voice   … 音声入出力（押して話すキー、音声認識、聞き間違いの補正、読み上げ）
+#   ui      … 画面上の状態表示
 #
 # 秘密情報（API キーなど）はここに書かず、.env に書く（.env.example を参照）。
 # 変更したらエージェントを起動し直す。
@@ -63,6 +64,9 @@ apps:
   - names: [Edge, Microsoft Edge, ブラウザ, browser]
     launch: msedge.exe
     process: [msedge.exe]
+  - names: [Chrome, Google Chrome, クローム, グーグルクローム]
+    launch: chrome.exe      # App Paths で解決（C:\Program Files\Google\Chrome\Application\chrome.exe）
+    process: [chrome.exe]
   - names: [ペイント, paint, mspaint]
     launch: mspaint.exe
     process: [mspaint.exe]
@@ -167,6 +171,14 @@ voice:
       - ダブルクリック
       - コピー
       - ペースト
+  # 聞き間違いの補正: 認識した文を、実行する前にモデルで直す（画像なし・思考なし。1〜2秒）
+  #   手がかり: 上の vocabulary、直前の指示、操作対象のアプリの画面にあるボタン・リンクの名前
+  correction:
+    enabled: true
+    ask_again_on_low: true    # 何の指示か分からない（確信度 low）ときは、実行せずに聞き直す
+    use_screen_words: true    # 画面のボタン・リンクの名前を手がかりにする（UI Automation。最大1秒弱）
+    max_screen_words: 60
+    timeout_secs: 10          # 超えたら補正せず、認識した文のまま実行する
   tts:
     # sapi:    Windows の SAPI5 を直接使う（既定）
     # pyttsx3: pyttsx3 経由。この PC では2回目以降の読み上げが途中で切れた（フェーズ7で確認）
@@ -177,3 +189,14 @@ voice:
     volume: 1.0             # 0.0〜1.0
     # 読み上げる種類: start（わかりました）/ reason（各操作の理由）/ confirm（確認のお願い）/ blocked / result（結果）
     speak: [start, reason, confirm, blocked, result]
+
+
+# 画面上の状態表示（Spotlight のような、画面の上に浮かぶバー）
+#   クリックは素通りし、フォーカスも取らない。スクリーンショットには写らない（モデルには見えない）
+ui:
+  overlay:
+    enabled: true
+    position: top             # top: 画面の上のほう / bottom: タスクバーの上
+    y: 0.10                   # position: top のときの縦の位置（画面の高さに対する割合）
+    width: 760
+    exclude_from_capture: true

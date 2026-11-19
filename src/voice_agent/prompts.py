@@ -17,6 +17,7 @@ Rules:
 - Keys and typing go to the FRONT app shown in the message. If the front app is not the one you need, use open_app first.
 - Before typing, make sure the right input field is focused (click it first if needed).
 - Prefer keyboard shortcuts when they do the same thing as a click (ctrl+l for the address bar, ctrl+t for a new tab).
+- Do not guess a website's address (URL). Unless you are sure of it, search for the site's name and open the result.
 - type does not press Enter. Use a separate key action "enter" when needed.
 - To enter numbers or a formula (for example in Calculator), type it all at once with the keyboard, e.g. "12*34=", instead of clicking on-screen buttons.
 - If the last action did not change the screen, try a different approach instead of repeating it.
@@ -29,10 +30,20 @@ def system_prompt(image_size: tuple[int, int], app_names: list[str]) -> str:
     return SYSTEM.format(w=image_size[0], h=image_size[1], apps=", ".join(app_names))
 
 
+def speech_note(heard: str, task: str, vocabulary: list[str]) -> str:
+    """音声で指示されたときに、モデルへ添える注意書き（聞き間違いを含むかもしれないこと）。"""
+    src = "Japanese speech recognition" + (f' (it heard "{heard}" and was corrected)' if heard and heard != task else "")
+    note = (f"NOTE: The TASK came from {src}. It may still contain misheard words. Interpret it by similar "
+            "sounds, the words on the screen" + (" and these known words: " + "、".join(vocabulary) if vocabulary else "")
+            + ". If you cannot tell what is meant, return fail and say in reason what was unclear.")
+    return note
+
+
 def user_prompt(task: str, history: list[str], front_app: str, changed: bool | None = None,
-                blocked: list[str] | None = None, first_index: int = 1) -> str:
-    """history は直近ステップの1行要約（古い順）。first_index はその先頭のステップ番号。"""
-    lines = [f"TASK: {task}", ""]
+                blocked: list[str] | None = None, first_index: int = 1, note: str = "") -> str:
+    """history は直近ステップの1行要約（古い順）。first_index はその先頭のステップ番号。
+    note は音声で指示されたときの注意書き（speech_note）。"""
+    lines = [f"TASK: {task}"] + ([note] if note else []) + [""]
     if history:
         lines.append("RECENT STEPS (oldest first):")
         lines += [f"{i}. {h}" for i, h in enumerate(history, first_index)]

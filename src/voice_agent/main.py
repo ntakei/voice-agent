@@ -19,10 +19,15 @@ from .stopkey import StopKey
 class ConsoleHooks(Hooks):
     """コンソール表示 + 確認ダイアログ（+ 読み上げ）。"""
 
-    def __init__(self, timeout_secs: float = 30, speaker=None, speak_kinds=None):
+    def __init__(self, timeout_secs: float = 30, speaker=None, speak_kinds=None, overlay=None):
         self.timeout_secs = timeout_secs
         self.speaker = speaker
         self.speak_kinds = set(speak_kinds) if speak_kinds is not None else None   # None = すべて読む
+        self.overlay = overlay
+
+    def ui(self, state: str, main: str, sub: str = "") -> None:
+        if self.overlay is not None:
+            self.overlay.show(state, main, sub)
 
     def say(self, text: str, kind: str = "info") -> None:
         if self.speaker and (self.speak_kinds is None or kind in self.speak_kinds):
@@ -65,8 +70,10 @@ def main(argv=None) -> None:
     if args.voice and not args.no_tts:
         from .tts import make_speaker
         speaker = make_speaker(cfg)
+    overlay = make_overlay(cfg, args)
     hooks = ConsoleHooks(sc.get("confirm_timeout_secs", 30), speaker,
-                         (vc.get("tts") or {}).get("speak", ["start", "reason", "confirm", "blocked", "result"]))
+                         (vc.get("tts") or {}).get("speak", ["start", "reason", "confirm", "blocked", "result"]),
+                         overlay)
     agent = Agent(cfg, hooks=hooks, dry_run=dry, max_steps=args.max_steps,
                   think_normal=args.think_normal, think_stuck=args.think_stuck)
     stop_key = sc.get("stop_key", "esc")
@@ -84,25 +91,68 @@ def main(argv=None) -> None:
         print(f"結果: {summary['result']}  {summary['steps']} ステップ  {summary['secs']} 秒")
         print(f"レポート: {os.path.join(summary['dir'], 'report.html')}")
 
+    try:
+        if args.voice:
+            run_voice(args, cfg, agent, hooks, speaker, overlay)
+            return
+        if args.task:
+            run_one(" ".join(args.task))
+            return
+        print("タスクを入力してください（空行で終了）。")
+        while True:
+            hooks.ui("ready", overlay.idle_main, "待機中")
+            try:
+                task = input("\nタスク> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not task:
+                break
+            run_one(task)
+    finally:
+        overlay.close()
+
+
+def make_overlay(cfg: dict, args):
+    """画面上の状態表示（ui.overlay.enabled: false なら表示しない）。"""
+    from .overlay import NullOverlay, Overlay
+    oc = (cfg.get("ui") or {}).get("overlay") or {}
+    if not oc.get("enabled", True):
+        return NullOverlay()
+    stop_key = str((cfg.get("safety") or {}).get("stop_key", "esc")).capitalize()
     if args.voice:
-        run_voice(args, cfg, agent, hooks, speaker)
-        return
-    if args.task:
-        run_one(" ".join(args.task))
-        return
-    print("タスクを入力してください（空行で終了）。")
-    while True:
-        try:
-            task = input("\nタスク> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            break
-        if not task:
-            break
-        run_one(task)
+        key = str((cfg.get("voice") or {}).get("ptt_key", "f9")).upper()
+        ov = Overlay(cfg, hints=[f"{key} 話す", f"{stop_key} 停止"])
+        ov.idle_main = f"{key} を押しながら話してください"
+    else:
+        ov = Overlay(cfg, hints=[f"{stop_key} 停止"])
+        ov.idle_main = "端末にタスクを入力してください"
+    ov.show("ready", ov.idle_main, "待機中")
+    return ov.start()
 
 
-def run_voice(args, cfg, agent, hooks, speaker) -> None:
+def screen_context(agent, cfg):
+    """聞き間違いの補正の手がかり: エージェントが操作する見込みのウィンドウ（保護対象でない、いちばん手前のアプリ）と、
+    その中のボタン・リンクなどの名前。"""
+    from . import uia, winapi
+    cc = (cfg.get("voice") or {}).get("correction") or {}
+    chrome = {"最小化", "最大化", "元に戻す（縮小）", "復元", "閉じる", "システム"}
+
+    def context():
+        target = next((w for w in winapi.app_windows()
+                       if not agent.policy.is_protected(w.exe) and winapi.window_rect(w.hwnd)), None)
+        if target is None:
+            return "", []
+        words = []
+        if cc.get("use_screen_words", True):
+            words = [x for x in uia.visible_words(target.hwnd, limit=int(cc.get("max_screen_words", 60)))
+                     if x not in chrome]
+        return agent._front_name(target), words
+    return context
+
+
+def run_voice(args, cfg, agent, hooks, speaker, overlay=None) -> None:
     from . import stt
+    from .correct import Corrector
     from .ptt import PushToTalk
     from .recorder import Recorder
     from .tts import Speaker
@@ -128,7 +178,17 @@ def run_voice(args, cfg, agent, hooks, speaker) -> None:
                    always_on=bool(vc.get("mic_always_on", True)))
     if mic.always_on:
         mic.open()   # 話し始めが切れないよう、音声モードの間はマイクを開いておく
-    loop = VoiceLoop(cfg, agent, hooks, speaker or Speaker(), tr, ptt, mic)
+    if overlay is not None:
+        overlay.level_fn = lambda: mic.last_level
+    cc = vc.get("correction") or {}
+    corrector = None
+    if cc.get("enabled", True):
+        corrector = Corrector(agent.client, (vc.get("stt") or {}).get("vocabulary") or [],
+                              timeout_secs=float(cc.get("timeout_secs", 10)))
+        print("聞き間違いの補正: あり（確信度が低いときは聞き直します）" if cc.get("ask_again_on_low", True)
+              else "聞き間違いの補正: あり")
+    loop = VoiceLoop(cfg, agent, hooks, speaker or Speaker(), tr, ptt, mic,
+                     corrector=corrector, context=screen_context(agent, cfg))
     try:
         loop.run()
     except KeyboardInterrupt:
