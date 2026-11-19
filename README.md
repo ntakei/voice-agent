@@ -86,6 +86,15 @@ F9 を押しながら話す → 文字に起こす（faster-whisper）
 | `check_env.bat` | 環境の確認（操作はしません） |
 | `setup.bat` | 初回のセットアップ |
 
+### デスクトップのアイコン
+
+デスクトップに「音声操作エージェント」のアイコン（青地に白いマイク）を作れます。ダブルクリックすると `start_voice.bat` が起動します。
+
+```bat
+python -m uv run python scripts/create_shortcut.py           & rem 音声モード（本番）のアイコン
+python -m uv run python scripts/create_shortcut.py --dryrun  & rem リハーサル用のアイコンも作る
+```
+
 ### 音声モードの操作
 
 1. `start_voice.bat` を起動して、「準備ができました」と出るまで待ちます（数秒）。
