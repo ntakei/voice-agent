@@ -230,12 +230,12 @@ def open_app_real(monkeypatch, maximize=True, existing=True):
 
 def test_open_app_maximizes_existing_window(monkeypatch):
     calls, r = open_app_real(monkeypatch)
-    assert calls == [("maximize", 42), ("activate", 42)] and "最大化" in r.detail
+    assert calls == [("activate", 42), ("maximize", 42)] and "最大化" in r.detail
 
 
 def test_open_app_maximizes_launched_window(monkeypatch):
     calls, r = open_app_real(monkeypatch, existing=False)
-    assert calls == [("launch", "calc.exe"), ("maximize", 42), ("activate", 42)]
+    assert calls == [("launch", "calc.exe"), ("activate", 42), ("maximize", 42)]
 
 
 def test_open_app_without_maximize(monkeypatch):

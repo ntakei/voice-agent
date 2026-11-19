@@ -74,14 +74,43 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
     return (l, t, r, b) if r > l and b > t else None
 
 
+def _wait_zoomed(hwnd: int, secs: float) -> bool:
+    end = time.time() + secs
+    while time.time() < end:
+        if win32gui.IsZoomed(hwnd):
+            return True
+        time.sleep(0.05)
+    return bool(win32gui.IsZoomed(hwnd))
+
+
 def maximize(hwnd: int) -> bool:
-    """ウィンドウを最大化する（他のウィンドウとの重なりで、クリックが別のアプリに当たらないように）。"""
+    """ウィンドウを最大化する（他のウィンドウとの重なりで、クリックが別のアプリに当たらないように）。
+
+    アプリによって最大化は非同期に進むので少し待って確かめる。ShowWindow で最大化されなければ
+    「最大化」のシステムコマンドを送る（フェーズ7: Edge で ShowWindow 直後に最大化を確認できなかった）。
+    """
     try:
-        if not win32gui.IsZoomed(hwnd):
-            win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
-        return bool(win32gui.IsZoomed(hwnd))
+        if win32gui.IsZoomed(hwnd):
+            return True
+        win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
+        if _wait_zoomed(hwnd, 0.4):
+            return True
+        win32gui.PostMessage(hwnd, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE, 0)
+        return _wait_zoomed(hwnd, 0.6)
     except Exception:
         return False
+
+
+def root_window_at(x: int, y: int) -> WindowInfo | None:
+    """画面上の点にある、いちばん手前のトップレベルウィンドウ（クリックが当たるウィンドウ）。"""
+    try:
+        hwnd = win32gui.WindowFromPoint((int(x), int(y)))
+        if not hwnd:
+            return None
+        root = ctypes.windll.user32.GetAncestor(hwnd, 2)   # GA_ROOT
+        return window_info(root or hwnd)
+    except Exception:
+        return None
 
 
 def is_cloaked(hwnd: int) -> bool:

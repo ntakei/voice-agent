@@ -114,6 +114,23 @@ class Agent:
             raise box["e"]
         return box["r"]
 
+    def _restore_after_click(self, clicked: winapi.WindowInfo | None) -> str:
+        """クリックの後、クリックしたアプリではなく、エージェント自身の環境（Claude・端末・エクスプローラーなど
+        保護対象のプロセス）のウィンドウが前面に来ていたら、クリックしたウィンドウを前面に戻す。
+
+        フェーズ7: Edge の中をクリックすると、後ろの Claude やエクスプローラーが前面に来ることがあり、
+        モデルが「open_app → クリック」を繰り返すループになった。保護対象のアプリはエージェントの操作対象では
+        ないので、そこへ前面が移るのは意図しない切り替わりとみなす。
+        """
+        if clicked is None or self.policy.is_protected(clicked.exe):
+            return ""
+        now = winapi.foreground()
+        if now is None or now.hwnd == clicked.hwnd or not self.policy.is_protected(now.exe):
+            return ""
+        ok = winapi.activate(clicked.hwnd)
+        return (f"クリック後に前面が {now.describe()} に変わったので、{clicked.describe()} を前面に戻した"
+                + ("" if ok else "（失敗）"))
+
     @staticmethod
     def _front_rect():
         f = winapi.foreground()
@@ -314,6 +331,19 @@ class Agent:
                     self.hooks.status("blocked", f"[{step:02d}] {row['error']}: {label}")
                     prev_sig = None
                     continue
+                repeat_max = int(ac.get("repeat_max", 3))
+                if t in actions.CLICKS + ("open_app",) and repeat_max and done_sigs[-10:].count(sig) >= repeat_max:
+                    # 間に別の操作をはさんだ繰り返し（例: クリック → open_app → クリック → open_app …）
+                    blocked_run += 1
+                    total_blocks += 1
+                    row["error"] = f"ブロック: 同じ操作を直近で{repeat_max}回行った"
+                    history.append({"line": f"{label} -> BLOCKED: already done {repeat_max} times recently and it "
+                                            "did not achieve the goal. Try a different approach, or use fail.",
+                                    "changed": None, "label": label})
+                    s.log_step(row, record)
+                    self.hooks.status("blocked", f"[{step:02d}] {row['error']}: {label}")
+                    prev_sig = None
+                    continue
 
                 # 安全ルール（コードで強制）
                 point = (actions.to_screen_point(a["x"], a["y"], sent.size, screen_size)
@@ -364,6 +394,7 @@ class Agent:
                 self.hooks.status("acting", f"[{step:02d}] {r['secs']:.1f}s {'(思考 ' + thinking + ') ' if thinking != 'off' else ''}"
                                             f"{label} — {a.get('reason', '')}")
                 self.hooks.say(a.get("reason", ""), "reason")
+                clicked_win = winapi.root_window_at(*point) if point and t in actions.CLICKS else None
                 try:
                     res = ex.execute(a, sent.size)
                 except pyautogui.FailSafeException:
@@ -390,6 +421,15 @@ class Agent:
                     if next_img is None:
                         s.log_step(row, record)
                         raise Stopped()
+                    if t in actions.CLICKS and res.executed:
+                        restored = self._restore_after_click(clicked_win)
+                        if restored:
+                            row["notes"].append(restored)
+                            line += " (focus was stolen by another window; the clicked app was brought back to front)"
+                            next_img = screen.settle(self.stop_event, max_wait=wait, region=self._front_rect)
+                            if next_img is None:
+                                s.log_step(row, record)
+                                raise Stopped()
                     if t == "open_app":
                         app = actions.resolve_app(a["text"], self.apps)
                         now = winapi.foreground()

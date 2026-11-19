@@ -58,15 +58,18 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(executor, "paste_text", lambda text: acted.append("paste"))
     # アプリの起動・前面化・最大化も記録だけにする（テストで実際のアプリが開かないように）
     monkeypatch.setattr(executor, "launch", lambda exe: acted.append(f"launch:{exe}") or "CreateProcess")
+    monkeypatch.setattr(executor, "LAUNCH_WAIT", 0.1)
     monkeypatch.setattr(winapi, "activate", lambda hwnd: acted.append("activate") or True)
     monkeypatch.setattr(winapi, "maximize", lambda hwnd: acted.append("maximize") or True)
+    clicked_win = {"w": None}
+    monkeypatch.setattr(winapi, "root_window_at", lambda x, y: clicked_win["w"])
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path)
     # UI Automation と FAILSAFE の確認も偽物に（テスト中の実際のマウス位置に左右されないように）
     el = {"clicked": None, "focused": None}
     monkeypatch.setattr(uia, "element_at", lambda x, y: el["clicked"])
     monkeypatch.setattr(uia, "focused_element", lambda: el["focused"])
     monkeypatch.setattr(agent_mod.Agent, "failsafe_check", lambda self: None)
-    return {"frames": frames, "acted": acted, "tmp": tmp_path, "el": el, "front": front}
+    return {"frames": frames, "acted": acted, "tmp": tmp_path, "el": el, "front": front, "clicked_win": clicked_win}
 
 
 class QuietHooks(agent_mod.Hooks):
@@ -396,3 +399,50 @@ def test_stop_cancels_model_call(env):
     t = time.time()
     s = ag.run("テスト")
     assert s["result"] == "stopped" and client.cancelled.is_set() and time.time() - t < 2
+
+
+
+# ---- クリック後に前面を奪われたら戻す / 間をはさんだ繰り返し ----
+
+EDGE = winapi.WindowInfo(7, "Yahoo - Microsoft Edge", "msedge.exe")
+CLAUDE = winapi.WindowInfo(8, "Claude", "claude.exe")
+SAFETY_CFG = {**CFG, "safety": {"protected_processes": ["claude.exe", "explorer.exe", "WindowsTerminal.exe"]}}
+
+
+def run_click(env, new_front):
+    env["front"]["w"] = EDGE
+    env["clicked_win"]["w"] = EDGE
+
+    class StealOnAct(QuietHooks):
+        def status(self, state, text):
+            if state == "acting":
+                env["front"]["w"] = new_front
+    env["frames"] += [solid((255 * (i % 2),) * 3) for i in range(6)]
+    client = FakeClient([J(action="click", x=100, y=200), J(action="done")])
+    ag = agent_mod.Agent(SAFETY_CFG, hooks=StealOnAct(), dry_run=False, client=client)
+    s = ag.run("テスト")
+    _, rows = rows_of(env, s)
+    return client, rows
+
+
+def test_focus_stolen_by_own_environment_is_restored(env):
+    client, rows = run_click(env, CLAUDE)
+    assert env["acted"] == ["moveTo", "click", "activate"]
+    assert any("前面に戻した" in n for n in rows[0]["notes"])
+    assert "focus was stolen" in client.calls[1]["prompt"]
+
+
+def test_switch_to_other_app_is_left_alone(env):
+    calc = winapi.WindowInfo(9, "電卓", "CalculatorApp.exe")   # 保護対象でないアプリへの切り替わりは意図したものかもしれない
+    client, rows = run_click(env, calc)
+    assert env["acted"] == ["moveTo", "click"] and not rows[0]["notes"]
+
+
+def test_interleaved_repeat_is_blocked(env):
+    env["frames"] += [solid((255 * (i % 2),) * 3) for i in range(30)]   # 毎回画面は変わる
+    click = J(action="click", x=500, y=60, reason="アドレスバー")
+    opn = J(action="open_app", text="メモ帳", reason="前面へ")
+    ag, client = make([click, opn, click, opn, click, opn, click, J(action="done")], dry_run=False)
+    s = ag.run("テスト")
+    assert env["acted"].count("click") == 3                      # 4回目のクリックはブロック
+    assert "already done 3 times" in client.calls[-1]["prompt"]

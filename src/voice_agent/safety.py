@@ -76,6 +76,10 @@ class SafetyPolicy:
         self.blocked_keys = [_key_set(k) for k in sc.get("blocked_keys", [])]
         self.protected = {p.lower() for p in sc.get("protected_processes", [])}
 
+    def is_protected(self, exe: str) -> bool:
+        """エージェント自身の環境（端末・Claude・エクスプローラーなど）のプロセスか。"""
+        return bool(exe) and exe.lower() in self.protected
+
     def check(self, a: dict, front: WindowInfo | None, focused: Element | None = None,
               clicked: Element | None = None) -> Decision:
         """a: 検証済みのアクション / front: 前面ウィンドウ / focused: フォーカス中の要素 / clicked: クリック先の要素"""

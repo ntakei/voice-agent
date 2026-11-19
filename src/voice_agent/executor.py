@@ -18,6 +18,7 @@ pyautogui.FAILSAFE = True   # マウスを画面の隅へ動かすと FailSafeEx
 pyautogui.PAUSE = 0.05
 
 WHEEL_DELTA = 120           # Windows のホイール1目盛り
+LAUNCH_WAIT = 5.0           # 起動したアプリのウィンドウが出るまで待つ最大秒数
 
 
 @dataclass
@@ -93,20 +94,20 @@ class Executor:
         if self.stop_event.is_set():
             return ExecResult(label, None, False, "停止要求のため実行せず")
         if existing:
-            mx = self._maximize(existing.hwnd)
             ok = winapi.activate(existing.hwnd)
+            mx = self._maximize(existing.hwnd)
             return ExecResult(label, None, True, f"前面化{'成功' if ok else '失敗'}{mx}: {existing.describe()}")
         try:
             how = launch(app.launch)
         except OSError as e:
             return ExecResult(label, None, False, f"起動に失敗: {app.launch}（{type(e).__name__}: {e}）")
-        # ウィンドウが出るまで最大5秒待つ（画面の落ち着き待ちはループ側で行う）
-        end = time.time() + 5
+        # ウィンドウが出るまで最大 LAUNCH_WAIT 秒待つ（画面の落ち着き待ちはループ側で行う）
+        end = time.time() + LAUNCH_WAIT
         while time.time() < end and not self.stop_event.is_set():
             w = winapi.find_window(app.process)
             if w:
-                mx = self._maximize(w.hwnd)
                 winapi.activate(w.hwnd)
+                mx = self._maximize(w.hwnd)
                 return ExecResult(label, None, True, f"起動（{how}）{mx}: {w.describe()}")
             time.sleep(0.25)
         return ExecResult(label, None, True, f"起動したがウィンドウが見つからない: {app.launch}（{how}）")
