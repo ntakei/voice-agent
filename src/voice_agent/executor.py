@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import pyautogui
 import pyperclip
 
-from . import actions, winapi
+from . import actions, uia, winapi
 
 pyautogui.FAILSAFE = True   # マウスを画面の隅へ動かすと FailSafeException で止まる
 pyautogui.PAUSE = 0.05
@@ -72,6 +72,23 @@ class Executor:
                 pyautogui.moveTo(*point, duration=0.15)
             pyautogui.scroll(a["dy"] * WHEEL_DELTA)
         return ExecResult(label, point, True)
+
+    def press_link(self, a: dict, image_size: tuple[int, int]) -> ExecResult | None:
+        """リンクを UI Automation で直接押す（マウスはその位置へ動かして見せるだけ）。押せなければ None。
+
+        フェーズ7: Edge ではページ内のリンクをマウスでクリックしても開かなかった（Chrome では開いた）。
+        """
+        point = actions.to_screen_point(a["x"], a["y"], image_size, self.screen_size)
+        label = actions.describe(a, point)
+        if self.dry_run:
+            return ExecResult(label, point, False, "リンクを UI Automation で直接押す")
+        if self.stop_event.is_set():
+            return ExecResult(label, point, False, "停止要求のため実行せず")
+        pyautogui.moveTo(*point, duration=0.25, tween=pyautogui.easeOutQuad)
+        what = uia.invoke_at(*point)
+        if not what:
+            return None
+        return ExecResult(label, point, True, f"{what} を UI Automation で直接押した")
 
     def _dry_detail(self, a: dict) -> str:
         t = a["action"]

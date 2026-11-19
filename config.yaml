@@ -44,6 +44,10 @@ agent:
   think_after_blocked: 2    # 繰り返しでブロックされた手がこの回数続いたら思考を強める
   give_up_after_blocks: 4   # 1回の実行でブロックがこの回数に達したら、行き詰まりとして打ち切る（0 = 打ち切らない）
   repeat_max: 3             # 同じクリック・open_app を直近10手でこの回数行っていたら、次はブロック（間に別の操作をはさんでも）
+  # リンクをマウスでクリックせず、UI Automation で直接押すブラウザ（Edge はマウスのクリックでリンクが開かなかった）
+  invoke_links_in: [msedge.exe]
+  # ブラウザ: リンクを押してもページの題名が変わらなければ「効果なし」とみなす（動く画像で「変化あり」と誤判定しないように）
+  browser_processes: [msedge.exe, chrome.exe, firefox.exe]
 
 # open_app で起動・前面化してよいアプリ（ここにないアプリは拒否）
 #   names:   モデルやユーザーが使う呼び名（大文字小文字は区別しない）

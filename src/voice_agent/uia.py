@@ -50,3 +50,32 @@ def focused_element() -> Element | None:
             return _element(auto.GetFocusedControl())
     except Exception:
         return None
+
+
+# マウスのクリックが効かないとき、UI Automation で直接「押す」対象にする要素の種類
+INVOKABLE = {"HyperlinkControl", "ButtonControl", "MenuItemControl", "SplitButtonControl"}
+
+
+def invoke_at(x: int, y: int) -> str:
+    """実画面座標 (x, y) のリンク・ボタンを、UI Automation で直接押す（Invoke）。押せたら要素の説明を返す。
+
+    フェーズ7: Edge ではページ内のリンクをマウスでクリックしても開かなかった（Chrome では開いた）。
+    リンクの文字の部分が当たったときは、その親がリンクのことがあるので、3階層まで親をたどる。
+    """
+    try:
+        with auto.UIAutomationInitializerInThread():
+            ctrl = auto.ControlFromPoint(x, y)
+            for _ in range(3):
+                if ctrl is None:
+                    break
+                if ctrl.ControlTypeName in INVOKABLE:
+                    pat = ctrl.GetPattern(auto.PatternId.InvokePattern)
+                    if pat is not None and pat.Invoke():
+                        return _element(ctrl).describe()
+                    legacy = ctrl.GetPattern(auto.PatternId.LegacyIAccessiblePattern)
+                    if legacy is not None and legacy.DoDefaultAction():
+                        return _element(ctrl).describe()
+                ctrl = ctrl.GetParentControl()
+    except Exception:  # noqa: BLE001  押せなければ何もしない（呼び出し側はマウスのクリックの結果のまま扱う）
+        return ""
+    return ""

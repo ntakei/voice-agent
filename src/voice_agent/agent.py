@@ -114,6 +114,20 @@ class Agent:
             raise box["e"]
         return box["r"]
 
+    @staticmethod
+    def _invoke_if_no_effect(before, after, front: winapi.WindowInfo | None, point) -> str:
+        """リンク・ボタンをクリックしても前面ウィンドウの中が変わらなかったら、UI Automation で直接押す。
+
+        フェーズ7: Edge でページ内のリンクをクリックしても開かず、同じクリックを繰り返して行き詰まった。
+        """
+        if after is None or point is None:
+            return ""
+        region = winapi.window_rect(front.hwnd) if front else None
+        if screen.changed(before, after, region=region):
+            return ""
+        what = uia.invoke_at(*point)
+        return f"クリックで画面が変わらなかったので、{what} を UI Automation で直接押した" if what else ""
+
     def _restore_after_click(self, clicked: winapi.WindowInfo | None) -> str:
         """クリックの後、クリックしたアプリではなく、エージェント自身の環境（Claude・端末・エクスプローラーなど
         保護対象のプロセス）のウィンドウが前面に来ていたら、クリックしたウィンドウを前面に戻す。
@@ -206,6 +220,10 @@ class Agent:
                 front_name = self._front_name(front)
                 changed, compare = self._compare(prev_img, img, prev_front, front)
                 prev_front = front.hwnd if front else None
+                if prev_sig is not None and history and history[-1].get("page_unchanged"):
+                    # リンクを押したのにページの題名が変わらなかった: 画面の一部（スライドショーなど）が
+                    # 勝手に動いていても「効果なし」として扱う（フェーズ7: 動く画像で「変化あり」と誤判定した）
+                    changed = False
                 if prev_sig is not None and history:
                     history[-1]["changed"] = changed
                     if changed is False and not self.dry_run:
@@ -394,12 +412,36 @@ class Agent:
                 if self.stop_event.is_set():
                     s.log_step(row, record)
                     raise Stopped()
+                if not self.dry_run and t != "open_app":
+                    # 実行の直前に前面アプリを確かめ直す。モデルが考えている間（思考ありで数十秒）に人が別の
+                    # ウィンドウを触ると、画面を撮った時点の前面で判定した安全ルールが当てはまらなくなる
+                    # （フェーズ7: 考え直しの間に端末が前面になり、Ctrl+L が端末に入った）。
+                    now = winapi.foreground()
+                    if (now.hwnd if now else None) != (front.hwnd if front else None):
+                        blocked_run += 1
+                        total_blocks += 1
+                        why = f"考えている間に前面が {now.describe() if now else '不明'} に変わった"
+                        row.update(error=f"実行せず: {why}", guard="front_changed")
+                        history.append({"line": f"{label} -> NOT EXECUTED: while you were thinking, the front window "
+                                                f"changed to {now.exe if now else 'unknown'}. Look at the new screen.",
+                                        "changed": None, "label": label})
+                        s.log_step(row, record)
+                        self.hooks.status("blocked", f"[{step:02d}] 実行せず: {why}")
+                        prev_sig = None
+                        continue
                 self.hooks.status("acting", f"[{step:02d}] {r['secs']:.1f}s {'(思考 ' + thinking + ') ' if thinking != 'off' else ''}"
                                             f"{label} — {a.get('reason', '')}")
                 self.hooks.say(a.get("reason", ""), "reason")
                 clicked_win = winapi.root_window_at(*point) if point and t in actions.CLICKS else None
+                is_link = (t == "click" and d.clicked is not None and d.clicked.control_type == "HyperlinkControl"
+                           and front is not None)
                 try:
-                    res = ex.execute(a, sent.size)
+                    res, pressed = None, False
+                    if is_link and front.exe.lower() in {x.lower() for x in ac.get("invoke_links_in", ["msedge.exe"])}:
+                        res = ex.press_link(a, sent.size)      # マウスのクリックが効かないブラウザでは直接押す
+                        pressed = res is not None
+                    if res is None:
+                        res = ex.execute(a, sent.size)
                 except pyautogui.FailSafeException:
                     s.log_step({**row, "error": "FAILSAFE"}, record)
                     raise
@@ -414,6 +456,7 @@ class Agent:
                 elif res.detail:
                     self.hooks.status("acting", f"     {res.detail}")
                 done_sigs.append(sig)
+                page_unchanged = False
                 line = f"{label} — {a.get('reason', '')}"
                 if not self.dry_run and not res.executed and res.detail.startswith("起動に失敗"):
                     line += f" -> FAILED: {res.detail}"
@@ -424,6 +467,23 @@ class Agent:
                     if next_img is None:
                         s.log_step(row, record)
                         raise Stopped()
+                    if t == "click" and res.executed and not pressed and d.clicked is not None                             and d.clicked.control_type in uia.INVOKABLE:
+                        invoked = self._invoke_if_no_effect(img, next_img, front, point)
+                        if invoked:
+                            row["notes"].append(invoked)
+                            line += " (the mouse click had no effect, so the link/button was activated directly)"
+                            self.hooks.status("acting", f"     {invoked}")
+                            next_img = screen.settle(self.stop_event, max_wait=wait, region=self._front_rect)
+                            if next_img is None:
+                                s.log_step(row, record)
+                                raise Stopped()
+                    if is_link and res.executed and front.exe.lower() in {
+                            x.lower() for x in ac.get("browser_processes", ["msedge.exe", "chrome.exe", "firefox.exe"])}:
+                        now = winapi.foreground()
+                        if now is not None and now.hwnd == front.hwnd and now.title == front.title:
+                            page_unchanged = True
+                            row["notes"].append(f"リンクを押したが、ページの題名が変わらない（{front.title[:40]}）")
+                            line += " -> the page did not change (same title); the link may not have opened"
                     if t in actions.CLICKS and res.executed:
                         restored = self._restore_after_click(clicked_win)
                         if restored:
@@ -440,7 +500,8 @@ class Agent:
                             line += f" — but {now.exe if now else 'another app'} is still in front"
                             row["notes"].append(f"open_app 後も前面は {now.describe() if now else '不明'}")
                 s.log_step(row, record)
-                history.append({"line": line, "changed": None, "label": label, "action": t})
+                history.append({"line": line, "changed": None, "label": label, "action": t,
+                                "page_unchanged": page_unchanged})
                 prev_sig = sig
         except KeyboardInterrupt:
             # Ctrl+C で終了するときも、レポートを残してから抜ける

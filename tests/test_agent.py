@@ -70,6 +70,8 @@ def env(monkeypatch, tmp_path):
     el = {"clicked": None, "focused": None}
     monkeypatch.setattr(uia, "element_at", lambda x, y: el["clicked"])
     monkeypatch.setattr(uia, "focused_element", lambda: el["focused"])
+    # UI Automation で直接押す処理も記録だけ（実際の画面のボタンを押さないように）
+    monkeypatch.setattr(uia, "invoke_at", lambda x, y: acted.append("invoke") or "Hyperlink「リンク」")
     monkeypatch.setattr(agent_mod.Agent, "failsafe_check", lambda self: None)
     return {"frames": frames, "acted": acted, "tmp": tmp_path, "el": el, "front": front, "clicked_win": clicked_win}
 
@@ -462,3 +464,87 @@ def test_ctrl_c_still_writes_report(env):
     d = next(p for p in env["tmp"].iterdir() if p.is_dir())
     s = json.loads((d / "summary.json").read_text(encoding="utf-8"))
     assert s["result"] == "stopped" and "Ctrl+C" in s["reason"] and (d / "report.html").exists()
+
+
+
+# ---- 実行直前の前面の確認 / クリックが効かないときの直接押し ----
+
+def test_front_changed_while_thinking_is_not_executed(env):
+    term = winapi.WindowInfo(5, "コマンド プロンプト", "WindowsTerminal.exe")
+
+    class UserTouchesTerminal(FakeClient):
+        def chat(self, messages, **kw):
+            r = super().chat(messages, **kw)
+            if len(self.calls) == 1:
+                env["front"]["w"] = term          # 考えている間に人が端末をクリックした
+            return r
+    client = UserTouchesTerminal([J(action="key", text="ctrl+l", target_app="メモ帳"), J(action="done")])
+    ag = agent_mod.Agent(CFG, hooks=QuietHooks(), dry_run=False, client=client)
+    s = ag.run("テスト")
+    assert "hotkey" not in env["acted"]           # 端末に Ctrl+L を送らない
+    assert "NOT EXECUTED" in client.calls[1]["prompt"] and "WindowsTerminal.exe" in client.calls[1]["prompt"]
+    _, rows = rows_of(env, s)
+    assert rows[0]["guard"] == "front_changed"
+
+
+def test_click_on_link_without_effect_is_invoked(env):
+    from voice_agent.uia import Element
+    env["el"]["clicked"] = Element("三井情報（MKI）", "HyperlinkControl", False)
+    ag, client = make([J(action="click", x=190, y=261, reason="リンクを開く"), J(action="done")], dry_run=False)
+    s = ag.run("テスト")                          # 画面は変わらない（偽の画面は同じ画像のまま）
+    assert env["acted"] == ["moveTo", "click", "invoke"]
+    _, rows = rows_of(env, s)
+    assert any("直接押した" in n for n in rows[0]["notes"])
+    assert "activated directly" in client.calls[1]["prompt"]
+
+
+def test_click_with_effect_is_not_invoked(env):
+    from voice_agent.uia import Element
+    env["el"]["clicked"] = Element("三井情報（MKI）", "HyperlinkControl", False)
+    env["frames"] += [solid((0, 0, 0)), solid((255, 255, 255))]   # クリックで画面が変わった
+    ag, _ = make([J(action="click", x=190, y=261), J(action="done")], dry_run=False)
+    ag.run("テスト")
+    assert "invoke" not in env["acted"]
+
+
+def test_click_on_non_invokable_is_not_invoked(env):
+    from voice_agent.uia import Element
+    env["el"]["clicked"] = Element("", "PaneControl", False)
+    ag, _ = make([J(action="click", x=190, y=261), J(action="done")], dry_run=False)
+    ag.run("テスト")
+    assert "invoke" not in env["acted"]
+
+
+# ---- Edge のリンクは直接押す / ページの題名でリンクの効果を判定 ----
+
+def edge_link_env(env, title_after=None):
+    from voice_agent.uia import Element
+    edge = winapi.WindowInfo(7, "三井情報（MKI） - Microsoft Edge", "msedge.exe")
+    env["front"]["w"] = edge
+    env["el"]["clicked"] = Element(" 資料ダウンロード", "HyperlinkControl", False)
+
+    class ChangeTitleOnAct(QuietHooks):
+        def status(self, state, text):
+            if state == "acting" and title_after:
+                env["front"]["w"] = winapi.WindowInfo(7, title_after, "msedge.exe")
+    return ChangeTitleOnAct()
+
+
+def test_edge_link_is_pressed_directly_once(env):
+    hooks = edge_link_env(env, title_after="資料ダウンロード | 三井情報 - Microsoft Edge")
+    client = FakeClient([J(action="click", x=1259, y=101, target_app="Edge"), J(action="done")])
+    ag = agent_mod.Agent(CFG, hooks=hooks, dry_run=False, client=client)
+    s = ag.run("テスト")
+    assert env["acted"] == ["moveTo", "invoke"]          # マウスのクリックはせず、1回だけ直接押す
+    _, rows = rows_of(env, s)
+    assert "直接押した" in rows[0]["detail"] and not rows[0]["notes"]
+
+
+def test_link_with_same_title_counts_as_no_effect(env):
+    hooks = edge_link_env(env, title_after=None)        # 題名が変わらない（ページが開いていない）
+    env["frames"] += [solid((255 * (i % 2),) * 3) for i in range(6)]   # 動く画像で画面は毎回変わる
+    client = FakeClient([J(action="click", x=1259, y=101), J(action="done", reason="押した")])
+    ag = agent_mod.Agent(CFG, hooks=hooks, dry_run=False, client=client)
+    s = ag.run("テスト")
+    assert "did NOT change" in client.calls[1]["prompt"] and "the page did not change" in client.calls[1]["prompt"]
+    assert s["warnings"] and "画面が変わらなかった操作" in s["warnings"][0]   # 「完了」に要確認の警告
