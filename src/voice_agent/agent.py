@@ -127,9 +127,11 @@ class Agent:
         now = winapi.foreground()
         if now is None or now.hwnd == clicked.hwnd or not self.policy.is_protected(now.exe):
             return ""
+        # 原因調べのための記録（クリックした窓が応答なしだったか・最大化されていたか）
+        diag = f"応答なし={winapi.is_hung(clicked.hwnd)} 最大化={winapi.is_zoomed(clicked.hwnd)}"
         ok = winapi.activate(clicked.hwnd)
         return (f"クリック後に前面が {now.describe()} に変わったので、{clicked.describe()} を前面に戻した"
-                + ("" if ok else "（失敗）"))
+                + ("" if ok else "（失敗）") + f"（{diag}）")
 
     @staticmethod
     def _front_rect():
@@ -188,6 +190,7 @@ class Agent:
 
         self.hooks.status("start", f"タスク: {task}" + ("（dry-run）" if self.dry_run else ""))
         self.hooks.say("わかりました。", "start")
+        interrupted = False
         try:
             for step in range(1, self.max_steps + 1):
                 if self.stop_event.is_set():
@@ -439,6 +442,13 @@ class Agent:
                 s.log_step(row, record)
                 history.append({"line": line, "changed": None, "label": label, "action": t})
                 prev_sig = sig
+        except KeyboardInterrupt:
+            # Ctrl+C で終了するときも、レポートを残してから抜ける
+            interrupted = True
+            result, reason = "stopped", "Ctrl+C で終了"
+            cancel = getattr(self.client, "cancel", None)
+            if cancel:
+                cancel()
         except Stopped:
             result, reason = "stopped", "停止要求（Esc）"
         except pyautogui.FailSafeException:
@@ -459,4 +469,6 @@ class Agent:
         self.hooks.status(result, f"{msg} {reason}".strip())
         for w in warnings:
             self.hooks.status("warn", f"注意: {w}")
+        if interrupted:
+            raise KeyboardInterrupt
         return summary

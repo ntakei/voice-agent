@@ -116,7 +116,7 @@ def no_input(monkeypatch):
     """dry-run 中に pyautogui / クリップボード / 起動が呼ばれたら失敗させる。"""
     def boom(*a, **k):
         raise AssertionError("dry-run で実際の操作が呼ばれた")
-    for name in ("moveTo", "click", "doubleClick", "hotkey", "scroll", "write", "press"):
+    for name in ("moveTo", "click", "mouseDown", "mouseUp", "doubleClick", "hotkey", "scroll", "write", "press"):
         monkeypatch.setattr(executor.pyautogui, name, boom)
     monkeypatch.setattr(executor.pyperclip, "copy", boom)
     monkeypatch.setattr(executor.os, "startfile", boom)
@@ -160,7 +160,9 @@ def test_real_mode_respects_stop(no_input):
 def test_real_mode_calls_pyautogui(monkeypatch):
     calls = []
     monkeypatch.setattr(executor.pyautogui, "moveTo", lambda *a, **k: calls.append(("moveTo", a)))
-    monkeypatch.setattr(executor.pyautogui, "click", lambda *a, **k: calls.append(("click", a)))
+    monkeypatch.setattr(executor.pyautogui, "mouseDown", lambda *a, **k: calls.append(("click", a)))
+    monkeypatch.setattr(executor.pyautogui, "mouseUp", lambda *a, **k: None)
+    monkeypatch.setattr(executor.winapi, "foreground", lambda: None)
     monkeypatch.setattr(executor.pyautogui, "hotkey", lambda *a, **k: calls.append(("hotkey", a)))
     monkeypatch.setattr(executor.pyautogui, "scroll", lambda *a, **k: calls.append(("scroll", a)))
     ex = executor.Executor(SCREEN, APPS, dry_run=False)
@@ -241,3 +243,14 @@ def test_open_app_maximizes_launched_window(monkeypatch):
 def test_open_app_without_maximize(monkeypatch):
     calls, r = open_app_real(monkeypatch, maximize=False)
     assert calls == [("activate", 42)] and "最大化" not in r.detail
+
+
+def test_click_records_focus_change(monkeypatch):
+    W = executor.winapi.WindowInfo
+    seq = [W(1, "Edge", "msedge.exe"), W(2, "Program Manager", "explorer.exe"), W(2, "Program Manager", "explorer.exe")]
+    monkeypatch.setattr(executor.winapi, "foreground", lambda: seq.pop(0))
+    monkeypatch.setattr(executor.pyautogui, "moveTo", lambda *a, **k: None)
+    monkeypatch.setattr(executor.pyautogui, "mouseDown", lambda *a, **k: None)
+    monkeypatch.setattr(executor.pyautogui, "mouseUp", lambda *a, **k: None)
+    r = executor.Executor(SCREEN, APPS, dry_run=False).execute(check({"action": "click", "x": 10, "y": 10})[0], IMG)
+    assert r.executed and "押した直後 explorer.exe" in r.detail

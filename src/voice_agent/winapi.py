@@ -4,6 +4,7 @@ import os
 import time
 from dataclasses import dataclass
 
+import pywintypes
 import win32api
 import win32con
 import win32gui
@@ -74,13 +75,23 @@ def window_rect(hwnd: int) -> tuple[int, int, int, int] | None:
     return (l, t, r, b) if r > l and b > t else None
 
 
+def is_zoomed(hwnd: int) -> bool:
+    """最大化されているか（win32gui には IsZoomed がないので user32 を直接呼ぶ）。"""
+    return bool(ctypes.windll.user32.IsZoomed(hwnd))
+
+
+def is_hung(hwnd: int) -> bool:
+    """応答なし（Windows が「応答なし」と判断している）か。"""
+    return bool(ctypes.windll.user32.IsHungAppWindow(hwnd))
+
+
 def _wait_zoomed(hwnd: int, secs: float) -> bool:
     end = time.time() + secs
     while time.time() < end:
-        if win32gui.IsZoomed(hwnd):
+        if is_zoomed(hwnd):
             return True
         time.sleep(0.05)
-    return bool(win32gui.IsZoomed(hwnd))
+    return is_zoomed(hwnd)
 
 
 def maximize(hwnd: int) -> bool:
@@ -89,15 +100,17 @@ def maximize(hwnd: int) -> bool:
     アプリによって最大化は非同期に進むので少し待って確かめる。ShowWindow で最大化されなければ
     「最大化」のシステムコマンドを送る（フェーズ7: Edge で ShowWindow 直後に最大化を確認できなかった）。
     """
+    # ※ 例外を広く握りつぶさない: フェーズ7では存在しない関数（win32gui の IsZoomed）を呼んだ AttributeError を
+    #   握りつぶして「最大化できず」になり、一度も最大化していなかった
     try:
-        if win32gui.IsZoomed(hwnd):
+        if is_zoomed(hwnd):
             return True
         win32gui.ShowWindow(hwnd, win32con.SW_MAXIMIZE)
         if _wait_zoomed(hwnd, 0.4):
             return True
         win32gui.PostMessage(hwnd, win32con.WM_SYSCOMMAND, win32con.SC_MAXIMIZE, 0)
         return _wait_zoomed(hwnd, 0.6)
-    except Exception:
+    except (OSError, pywintypes.error):
         return False
 
 

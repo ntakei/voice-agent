@@ -57,7 +57,9 @@ class Executor:
 
         if t == "click":
             pyautogui.moveTo(*point, duration=0.25, tween=pyautogui.easeOutQuad)
-            pyautogui.click()
+            detail = click_and_watch_focus()
+            if detail:
+                return ExecResult(label, point, True, detail)
         elif t == "double_click":
             pyautogui.moveTo(*point, duration=0.25, tween=pyautogui.easeOutQuad)
             pyautogui.doubleClick(interval=0.08)
@@ -117,6 +119,24 @@ class Executor:
         if not self.maximize:
             return ""
         return "・最大化" if winapi.maximize(hwnd) else "・最大化できず"
+
+
+def click_and_watch_focus() -> str:
+    """押す・離すを分けてクリックし、その間に前面ウィンドウが変わったら記録する（原因調べ用）。
+
+    フェーズ7: Edge の中をクリックすると、後ろのウィンドウ（Claude・デスクトップ）が前面に来て、
+    リンクのクリックが効かないことがあった。押した時点で変わるのか、離した後に変わるのかを残す。
+    """
+    before = winapi.foreground()
+    pyautogui.mouseDown()
+    after_down = winapi.foreground()
+    pyautogui.mouseUp()
+    after_up = winapi.foreground()
+    hw = [w.hwnd if w else None for w in (before, after_down, after_up)]
+    if hw[0] == hw[1] == hw[2]:
+        return ""
+    name = lambda w: w.describe() if w else "なし"  # noqa: E731
+    return f"クリック中に前面が変わった: 押す前 {name(before)} / 押した直後 {name(after_down)} / 離した直後 {name(after_up)}"
 
 
 def launch(exe: str) -> str:

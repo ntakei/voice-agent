@@ -55,6 +55,8 @@ def env(monkeypatch, tmp_path):
     acted = []
     for name in ("moveTo", "click", "doubleClick", "hotkey", "scroll"):
         monkeypatch.setattr(executor.pyautogui, name, lambda *a, _n=name, **k: acted.append(_n))
+    monkeypatch.setattr(executor.pyautogui, "mouseDown", lambda *a, **k: acted.append("click"))
+    monkeypatch.setattr(executor.pyautogui, "mouseUp", lambda *a, **k: None)
     monkeypatch.setattr(executor, "paste_text", lambda text: acted.append("paste"))
     # アプリの起動・前面化・最大化も記録だけにする（テストで実際のアプリが開かないように）
     monkeypatch.setattr(executor, "launch", lambda exe: acted.append(f"launch:{exe}") or "CreateProcess")
@@ -446,3 +448,17 @@ def test_interleaved_repeat_is_blocked(env):
     s = ag.run("テスト")
     assert env["acted"].count("click") == 3                      # 4回目のクリックはブロック
     assert "already done 3 times" in client.calls[-1]["prompt"]
+
+
+def test_ctrl_c_still_writes_report(env):
+    class CtrlC(QuietHooks):
+        def status(self, state, text):
+            if state == "acting":
+                raise KeyboardInterrupt
+    client = FakeClient([J(action="click", x=1, y=1)])
+    ag = agent_mod.Agent(CFG, hooks=CtrlC(), dry_run=False, client=client)
+    with pytest.raises(KeyboardInterrupt):
+        ag.run("テスト")
+    d = next(p for p in env["tmp"].iterdir() if p.is_dir())
+    s = json.loads((d / "summary.json").read_text(encoding="utf-8"))
+    assert s["result"] == "stopped" and "Ctrl+C" in s["reason"] and (d / "report.html").exists()
