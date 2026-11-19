@@ -133,3 +133,75 @@ def visible_words(hwnd: int, limit: int = 80, budget_secs: float = 0.8, max_node
     except Exception:  # noqa: BLE001
         return words
     return words
+
+
+# ---- 番号で選ばせる（Set-of-Mark）: 画面上の操作できる部品の一覧 ----
+
+# 番号を付ける部品の種類（クリックや入力の対象になるもの）
+MARK_TYPES = {"ButtonControl", "HyperlinkControl", "EditControl", "ComboBoxControl", "CheckBoxControl",
+              "RadioButtonControl", "MenuItemControl", "TabItemControl", "ListItemControl", "TreeItemControl",
+              "SplitButtonControl", "SliderControl", "SpinnerControl", "DataItemControl", "HeaderItemControl"}
+
+
+@dataclass
+class Mark:
+    id: int
+    name: str
+    control_type: str
+    rect: tuple[int, int, int, int]     # 実画面のピクセル（left, top, right, bottom）
+
+    @property
+    def center(self) -> tuple[int, int]:
+        l, t, r, b = self.rect
+        return (l + r) // 2, (t + b) // 2
+
+    @property
+    def invokable(self) -> bool:
+        return self.control_type in INVOKABLE
+
+    def element(self) -> Element:
+        return Element(self.name, self.control_type, False)
+
+    def describe(self) -> str:
+        kind = self.control_type.replace("Control", "")
+        return f"[{self.id}] {kind}「{self.name[:40]}」" if self.name else f"[{self.id}] {kind}"
+
+
+def collect_marks(hwnd: int, area: tuple[int, int, int, int], limit: int = 80, budget_secs: float = 1.0,
+                  max_nodes: int = 1500, min_size: int = 6) -> list[Mark]:
+    """ウィンドウの中の、画面に見えている操作できる部品（ボタン・リンク・入力欄など）を集める。
+
+    area は対象にする画面の範囲（ウィンドウの矩形を画面内に切り詰めたもの）。番号は上から下・左から右の順。
+    ブラウザのページは部品が多いので、時間（budget_secs）・数（max_nodes）で打ち切る。取れなければ空。
+    """
+    import time
+    found: list[tuple[str, str, tuple[int, int, int, int]]] = []
+    seen_rects: set[tuple[int, int, int, int]] = set()
+    al, at, ar, ab = area
+    end = time.time() + budget_secs
+    try:
+        with auto.UIAutomationInitializerInThread():
+            root = auto.ControlFromHandle(hwnd)
+            queue = [root] if root else []
+            nodes = 0
+            while queue and time.time() < end and nodes < max_nodes:
+                ctrl = queue.pop(0)
+                nodes += 1
+                try:
+                    if ctrl.IsOffscreen:
+                        continue                    # 画面外（スクロールしないと見えない）の部品と、その中は飛ばす
+                    ct = ctrl.ControlTypeName
+                    if ct in MARK_TYPES and ctrl.IsEnabled:
+                        r = ctrl.BoundingRectangle
+                        rect = (max(r.left, al), max(r.top, at), min(r.right, ar), min(r.bottom, ab))
+                        if rect[2] - rect[0] >= min_size and rect[3] - rect[1] >= min_size and rect not in seen_rects:
+                            seen_rects.add(rect)
+                            found.append((" ".join((ctrl.Name or "").split()), ct, rect))
+                    queue.extend(ctrl.GetChildren())
+                except Exception:  # noqa: BLE001  途中で消えた要素などは飛ばす
+                    continue
+    except Exception:  # noqa: BLE001
+        pass
+    # 上から下・左から右（行の高さ 20px でまとめる）。多すぎるときは上のほうを優先
+    found.sort(key=lambda f: (f[2][1] // 20, f[2][0]))
+    return [Mark(i, name, ct, rect) for i, (name, ct, rect) in enumerate(found[:limit], 1)]

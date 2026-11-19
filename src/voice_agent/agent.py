@@ -8,7 +8,7 @@ import time
 
 import pyautogui
 
-from . import actions, config, prompts, safety, screen, uia, winapi
+from . import actions, config, evaluate, prompts, safety, screen, uia, winapi
 from .coords import parse_json
 from .executor import Executor
 from .logbook import Session
@@ -93,6 +93,7 @@ class Agent:
         self.policy = safety.SafetyPolicy(self.cfg, self.apps)
         self.client = client or ModelClient(self.cfg)
         self.stop_event = threading.Event()
+        self.version = evaluate.code_version()      # どのバージョンのコードで動かしたか（集計で比べる）
 
     # ---- 外部から ----
 
@@ -102,9 +103,13 @@ class Agent:
 
     # ---- 安全ルール ----
 
-    def check_safety(self, a: dict, front: winapi.WindowInfo | None, point: tuple[int, int] | None) -> safety.Decision:
-        """OS から要素情報を取って安全ルールを判定する。"""
-        clicked = uia.element_at(*point) if point and a["action"] in actions.CLICKS else None
+    def check_safety(self, a: dict, front: winapi.WindowInfo | None, point: tuple[int, int] | None,
+                     mark=None) -> safety.Decision:
+        """OS から要素情報を取って安全ルールを判定する。mark は番号で選ばれた部品（uia.Mark）。"""
+        if mark is not None:
+            clicked = mark.element()              # 番号で選んだ部品そのもので判定する
+        else:
+            clicked = uia.element_at(*point) if point and a["action"] in actions.CLICKS else None
         owner = (uia.actionable_at(*point)
                  if clicked is not None and clicked.control_type not in uia.INVOKABLE else None)
         judged = clicked
@@ -144,6 +149,18 @@ class Agent:
         if "e" in box:
             raise box["e"]
         return box["r"]
+
+    def _marks(self, front: winapi.WindowInfo | None, screen_size: tuple[int, int]):
+        """番号で選ばせる部品の一覧（前面アプリの中だけ）。前面がない・保護対象のアプリなら空のリスト。"""
+        som = (self.cfg.get("agent") or {}).get("som") or {}
+        if front is None or self.policy.is_protected(front.exe):
+            return []
+        r = winapi.window_rect(front.hwnd)
+        if not r:
+            return []
+        area = (max(r[0], 0), max(r[1], 0), min(r[2], screen_size[0]), min(r[3], screen_size[1]))
+        return uia.collect_marks(front.hwnd, area, limit=int(som.get("max_elements", 80)),
+                                 budget_secs=float(som.get("budget_secs", 1.0)))
 
     @staticmethod
     def _invoke_if_no_effect(before, after, front: winapi.WindowInfo | None, point) -> str:
@@ -217,7 +234,8 @@ class Agent:
         s = Session(task, source, meta={
             "model": self.cfg["model"]["name"], "dry_run": self.dry_run, "max_steps": self.max_steps,
             "think_normal": self.think_normal, "think_stuck": self.think_stuck,
-            "image_width": width, "screen": f"{screen_size[0]}x{screen_size[1]}", **(extra_meta or {})})
+            "image_width": width, "screen": f"{screen_size[0]}x{screen_size[1]}", "version": self.version,
+            **(extra_meta or {})})
         if audio_wav:
             s.path("audio.wav").write_bytes(audio_wav)   # 音声で指示したとき、レポートで聞き直せるように
         self.session = s
@@ -229,7 +247,9 @@ class Agent:
         done_sigs: list[tuple] = []
         prev_img, prev_sig, next_img, prev_front = None, None, None, None
         warnings: list[str] = []
+        front_name = ""
         no_change_run = bad_json_run = blocked_run = total_blocks = 0
+        som = ac.get("som") or {}
         give_up = int(ac.get("give_up_after_blocks", 4))
         result, reason = "fail", f"最大ステップ数（{self.max_steps}）に達した"
 
@@ -273,6 +293,10 @@ class Agent:
                 prev_img = img
 
                 sent = screen.for_model(img, width)
+                marks = self._marks(front, screen_size) if som.get("enabled", True) else None
+                if marks and som.get("draw", True):
+                    sent = screen.draw_marks(sent, marks, screen_size)   # モデルが見る画像に番号付きの枠
+                by_id = {m.id: m for m in (marks or [])}
                 stuck = (no_change_run >= ac.get("think_after_no_change", 2)
                          or bad_json_run >= ac.get("think_after_bad_json", 2)
                          or blocked_run >= ac.get("think_after_blocked", 2))
@@ -281,7 +305,8 @@ class Agent:
                 lines = [h["line"] + {True: "  [screen changed]", False: "  [screen did NOT change]"}.get(h["changed"], "")
                          for h in recent]
                 prompt = prompts.user_prompt(task, lines, front_name, changed if prev_sig else None,
-                                             blocked_labels, first_index=len(history) - len(recent) + 1, note=note)
+                                             blocked_labels, first_index=len(history) - len(recent) + 1, note=note,
+                                             elements=None if marks is None else [m.describe() for m in marks])
                 system = prompts.system_prompt(sent.size, [a.names[0] for a in self.apps])
                 self.hooks.status("thinking" if stuck else "looking",
                                   f"[{step:02d}] {'行き詰まったので考え直しています…' if stuck else '画面を見ています…'}")
@@ -336,7 +361,18 @@ class Agent:
                     prev_sig = None
                     continue
                 a = actions.normalize(a)
-                err = actions.validate(a, sent.size, self.apps)
+                mark = None
+                err = None
+                if a["action"] in actions.CLICKS and a.get("element") is not None:
+                    mark = by_id.get(a["element"])
+                    if mark is None:
+                        err = f"element {a['element']} は一覧にない（番号は ELEMENTS から選ぶ）"
+                    else:
+                        # 番号の部品の中心を、送った画像の座標にする（以降の処理は座標と同じ）
+                        cx, cy = mark.center
+                        a["x"], a["y"] = cx * sent.width / screen_size[0], cy * sent.height / screen_size[1]
+                        a["element_name"] = mark.name
+                err = err or actions.validate(a, sent.size, self.apps)
                 if err:
                     bad_json_run += 1
                     history.append({"line": f"invalid action: {err}", "changed": None, "label": "無効な操作"})
@@ -408,7 +444,7 @@ class Agent:
                 # 安全ルール（コードで強制）
                 point = (actions.to_screen_point(a["x"], a["y"], sent.size, screen_size)
                          if a.get("x") is not None and t in actions.CLICKS + ("scroll",) else None)
-                d = self.check_safety(a, front, point)
+                d = self.check_safety(a, front, point, mark)
                 for k in ("clicked", "focused"):
                     el = getattr(d, k, None)
                     if el is not None:
@@ -481,7 +517,10 @@ class Agent:
                            and front is not None)
                 try:
                     res, pressed = None, False
-                    if is_link and front.exe.lower() in {x.lower() for x in ac.get("invoke_links_in", ["msedge.exe"])}:
+                    if mark is not None and mark.invokable and t == "click":
+                        res = ex.press_element(a, sent.size)   # 番号で選んだボタン・リンクは直接押す
+                        pressed = res is not None
+                    if res is None and is_link and front.exe.lower() in {x.lower() for x in ac.get("invoke_links_in", ["msedge.exe"])}:
                         res = ex.press_link(a, sent.size)      # マウスのクリックが効かないブラウザでは直接押す
                         pressed = res is not None
                     if res is None:
@@ -562,12 +601,22 @@ class Agent:
         except Exception as e:  # noqa: BLE001  何が起きてもレポートは残す
             result, reason = "fail", f"{type(e).__name__}: {e}"
 
+        final = None
         try:
             final = screen.for_model(screen.capture(), width)
             final.save(s.path("final.jpg"), quality=85)
         except Exception:  # noqa: BLE001
             pass
         summary = s.finish(result, reason, warnings=warnings)
+        ec = self.cfg.get("eval") or {}
+        if result == "done" and not self.dry_run and final is not None and ec.get("verify", True):
+            # モデルの「完了」は自己申告なので、終了時の画面を別の呼び出しで見て判定する
+            self.hooks.ui("looking", "結果を確かめています…", task)
+            v = evaluate.verify_task(self.client, task, final, reason, front_name)
+            if v["achieved"] == "no":
+                warnings.append(f"終了時の画面では達成されていないようです（{v.get('evidence', '')}）")
+            summary = evaluate.update_summary(s.dir, {"verify": v, "warnings": list(warnings)})
+            self.hooks.status("verify", f"自動判定: {v['achieved']}（{v.get('evidence', '')}）")
         msg = {"done": "完了しました。", "fail": "うまくできませんでした。", "stopped": "停止しました。"}[result]
         if result != "stopped":
             self.hooks.say("完了しましたが、結果を確認してください。" if warnings and result == "done" else msg,

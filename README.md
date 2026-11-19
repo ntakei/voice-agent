@@ -4,7 +4,8 @@
 
 ```
 F9 を押しながら話す → 文字に起こす（faster-whisper）
-  → スクリーンショットをモデルに送る → モデルが次の1手を JSON で返す
+  → 前面アプリのボタン・リンク・入力欄に番号付きの枠を描いたスクリーンショットをモデルに送る
+  → モデルが次の1手を JSON で返す（押す部品は番号で選ぶ）
   → 安全ルールで確かめる → マウス・キーボードで実行 → 画面が落ち着くのを待つ → 繰り返し
   → 結果を読み上げる（Windows の音声合成）
 ```
@@ -198,7 +199,7 @@ python -m uv run voice-agent --dry-run "メモ帳を開いて"              & re
 | セクション | よく変える項目 |
 |---|---|
 | `model` | `base_url`・`name`（モデルのサーバー）、`thinking_normal`・`thinking_stuck`（思考モード）、`max_tokens_thinking` |
-| `agent` | `dry_run`、`max_steps`、`maximize_on_open`（開いたウィンドウの最大化）、`give_up_after_blocks` |
+| `agent` | `dry_run`、`max_steps`、`maximize_on_open`（開いたウィンドウの最大化）、`give_up_after_blocks`、`som`（番号で選ばせる） |
 | `apps` | 開いてよいアプリ（呼び名・起動コマンド・プロセス名） |
 | `safety` | 確認が必要な語・キー、拒否するキー、保護するアプリ、確認ダイアログの待ち時間 |
 | `voice` | `ptt_key`（押して話すキー）、`input_device`（マイク）、`stt.model`、`stt.vocabulary`（認識の手がかり）、`correction`（聞き間違いの補正）、`tts.rate`（読み上げの速さ）、`tts.speak`（読み上げる内容） |
@@ -230,6 +231,37 @@ python -m uv run voice-agent --dry-run "メモ帳を開いて"              & re
 「完了（要確認）」と表示された実行は、モデルが「完了」と言ったものの、画面が変わらなかった操作があったものです。結果を確かめてください。
 
 `runs/` にはスクリーンショットが残るので、展示の後は必要に応じて消してください。
+
+## 成功率を測る
+
+モデルの「完了」は自己申告なので、本当に成功したかを別に記録し、集計できるようにしています。
+
+| 記録 | 内容 |
+|---|---|
+| 自動判定 | 「完了」した実行は、終了時の画面を別のモデル呼び出しで見て「達成／未達成／不明」を判定します（約4秒）。未達成なら「完了（要確認）」と警告します |
+| 人の判定 | 実行のあとに状態表示で「うまくいきましたか？」と聞きます。音声モードは **F9 = はい / Esc = いいえ**（6秒で省略）、文字モードは端末で y / n。いちばん確かな記録です |
+| バージョン | どのコミットのコードで動かしたかを記録します（修正の前後で比べるため） |
+| 音声ごとの記録 | 発話ごとに録音と認識結果・補正結果を `runs/voice_log.jsonl` と `runs/_voice/` に残します |
+
+**集計レポート**（`runs/eval.html` をブラウザで開く）:
+
+```bat
+python -m uv run python scripts/eval_report.py                    & rem 集計する
+python -m uv run python scripts/eval_report.py --verify-missing   & rem 自動判定のない過去の実行も判定してから集計する
+```
+
+成功率、失敗の原因、モデルの自己申告と自動判定の食い違い、入力の種類別・バージョン別・アプリ別・日別の成功率、最近の実行の一覧を出します。成功・失敗は「人の判定 → 自動判定 → 不明」の順に決め、モデルの「完了」だけでは成功に数えません。
+
+**自動判定の限界**: 自動判定は「指示の文」に対して判定します。聞き間違えた指示（例:「お持ち賛同の天気を検索」）をそのとおりに実行した場合は「達成」になります。聞き間違いを含めて正しく測るには、人の判定が必要です。
+
+**音声認識の精度**（文字誤り率 CER）:
+
+```bat
+python -m uv run python scripts/asr_eval.py --export   & rem runs/asr_labels.csv を作る → Excel で truth（本当に言った文）を記入
+python -m uv run python scripts/asr_eval.py --eval --models small,large-v3-turbo
+```
+
+記録の認識結果・補正後の文・モデルで認識し直した結果の CER を比べられます。
 
 ## 音声認識をよくするには
 
@@ -293,6 +325,7 @@ src/voice_agent/
   confirm_ui.py        確認ダイアログ
   overlay.py           画面上の状態表示（Spotlight 風のバー。クリック素通り・スクリーンショットに写らない）
   correct.py           聞き間違いの補正
+  evaluate.py          成功の判定（終了時の画面による自動判定・人の判定・バージョン）
   stopkey.py           Esc での停止
   logbook.py           ログと report.html
   voice.py             音声モードのループ
@@ -303,6 +336,8 @@ scripts/
   download_models.py   音声認識モデルのダウンロード
   stt_compare.py       音声認識モデルの比較
   render_overlay_states.py  README 用の状態表示の見本画像（docs/overlay_states.png）を作る
+  eval_report.py       成功率のレポート（runs/eval.html）
+  asr_eval.py          音声認識の精度（CER）の測定
   coord_test.py        モデルの座標の精度テスト
   action_demo.py       1ステップの dry-run デモ
 tests/                 単体テスト（実際のマウス・キーボード・アプリは使いません）
@@ -318,11 +353,15 @@ python -m uv run pytest -q
 
 ### モデルの JSON
 
-モデルは、1ステップに1つ、次の形の JSON を返します。座標は、送った画像（幅 1512px）のピクセル座標です。
+モデルは、1ステップに1つ、次の形の JSON を返します。
 
 ```json
-{"action": "click", "x": 640, "y": 360, "text": "", "dy": 0, "target_app": "", "risky": false, "reason": "OKボタンを押す"}
+{"action": "click", "element": 12, "target_app": "", "risky": false, "reason": "OKボタンを押す"}
 ```
+
+- **番号で選ばせる（Set-of-Mark）:** 前面アプリのボタン・リンク・入力欄・タブなどを UI Automation で集め、スクリーンショットに番号付きの枠を描き、一覧（`ELEMENTS`）も指示文に添えます。モデルは押す部品を `element` の番号で答えます。番号で選ばれたボタン・リンクは、マウスではなく UI Automation で直接押します（入力欄などはマウスでクリック）。安全ルールも、その部品の名前で判定します。
+- 番号のない対象（画像の中、キャンバスなど）は、これまでどおり `x`・`y`（送った画像のピクセル座標、幅 1512px）で指定します。
+- 設定は `agent.som`（`enabled`、`draw`、`max_elements`、`budget_secs`）です。
 
 `action` は `click` / `double_click` / `type` / `key` / `scroll` / `open_app` / `wait` / `done` / `fail` のいずれかです。`wait` は読み込みや回答の生成を待つ操作で、`seconds`（1〜10秒）を指定します。
 

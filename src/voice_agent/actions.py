@@ -70,6 +70,17 @@ def normalize(a: dict) -> dict:
             a["dy"] = int(float(a.get("dy", -3)))
         except (TypeError, ValueError):
             a["dy"] = -3
+    if a["action"] in CLICKS:
+        # 番号で選ばせる（Set-of-Mark）: 部品の番号。別名のフィールドも受け付ける
+        for k in ("element", "id", "mark", "index", "number"):
+            v = a.get(k)
+            if v is not None and str(v).strip().lstrip("#[").rstrip("]").isdigit():
+                a["element"] = int(str(v).strip().lstrip("#[").rstrip("]"))
+                break
+        else:
+            a.pop("element", None)
+    else:
+        a.pop("element", None)            # 番号はクリックのときだけ使う
     if a["action"] == "wait":
         # 秒数は seconds（なければ dy・text）。1〜MAX_WAIT 秒にそろえる
         raw = a.get("seconds", a.get("dy") or a.get("text") or 2)
@@ -199,6 +210,10 @@ def describe(a: dict, point: tuple[int, int] | None = None) -> str:
     """ログや読み上げ用の短い日本語ラベル。"""
     t = a.get("action", "?")
     at = f" → {point}" if point else ""
+    if t in CLICKS and a.get("element") is not None:
+        name = str(a.get("element_name") or "")[:30]
+        verb = "クリック" if t == "click" else "ダブルクリック"
+        return f"{verb} #{a['element']}" + (f"「{name}」" if name else "") + at
     if t == "click":
         return f"クリック ({a.get('x'):.0f},{a.get('y'):.0f}){at}"
     if t == "double_click":

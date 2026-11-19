@@ -14,6 +14,7 @@ CFG = {
     "agent": {"dry_run": True, "max_steps": 25, "history_steps": 8, "settle_max": 0.1,
               "think_after_no_change": 2, "think_after_bad_json": 2, "think_after_blocked": 2},
     "apps": [{"names": ["メモ帳"], "launch": "notepad.exe", "process": ["notepad.exe"]}],
+    "eval": {"verify": False},   # 自動判定は専用のテストで確かめる（呼び出しの数を変えないように）
 }
 
 
@@ -74,6 +75,8 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(uia, "invoke_at", lambda x, y: acted.append("invoke") or "Hyperlink「リンク」")
     el["owner"] = None   # ボタンの中のアイコンをクリックしたときの、押されるボタン（既定はなし）
     monkeypatch.setattr(uia, "actionable_at", lambda x, y: el["owner"])
+    el["marks"] = []     # 番号で選ばせる部品（既定はなし）
+    monkeypatch.setattr(agent_mod.Agent, "_marks", lambda self, front, size: list(el["marks"]))
     monkeypatch.setattr(agent_mod.Agent, "failsafe_check", lambda self: None)
     return {"frames": frames, "acted": acted, "tmp": tmp_path, "el": el, "front": front, "clicked_win": clicked_win}
 
@@ -209,7 +212,7 @@ def test_stop_before_start(env):
 
 def test_safety_hook_blocks(env):
     class Guarded(agent_mod.Agent):
-        def check_safety(self, a, front, point):
+        def check_safety(self, a, front, point, mark=None):
             return safety.Decision(safety.BLOCK if a["action"] == "click" else safety.ALLOW, "テストでブロック")
     client = FakeClient([J(action="click", x=1, y=1), J(action="done")])
     ag = Guarded(CFG, hooks=QuietHooks(), dry_run=False, client=client)
@@ -594,3 +597,102 @@ def test_wait_action(env):
     s = ag.run("テスト")
     assert s["result"] == "done" and 3.0 in waited and env["acted"] == []
     assert "待つ 3 秒" in client.calls[1]["prompt"]
+
+
+
+# ---- 番号で選ばせる（Set-of-Mark）----
+
+def mk(i, name, ct, rect):
+    from voice_agent.uia import Mark
+    return Mark(i, name, ct, rect)
+
+
+def test_element_number_is_pressed_directly(env):
+    env["front"]["w"] = winapi.WindowInfo(7, "三井情報 - 検索 - Microsoft Edge", "msedge.exe")
+    env["el"]["marks"] = [mk(1, "戻る", "ButtonControl", (0, 40, 40, 80)),
+                          mk(2, "三井情報（MKI）", "HyperlinkControl", (160, 310, 330, 350))]
+    ag, client = make([J(action="click", element=2, reason="リンクを開く"), J(action="done")], dry_run=False)
+    s = ag.run("テスト")
+    assert env["acted"] == ["moveTo", "invoke"]                          # マウスでクリックせず、直接押す
+    assert "[2] Hyperlink「三井情報（MKI）」" in client.calls[0]["prompt"]   # 一覧をモデルに渡している
+    _, rows = rows_of(env, s)
+    assert rows[0]["label"].startswith("クリック #2「三井情報（MKI）」")
+    assert rows[0]["point"] == [245, 330]                                # 部品の中心
+
+
+def test_element_number_for_edit_field_is_clicked(env):
+    env["el"]["marks"] = [mk(1, "検索", "EditControl", (100, 100, 500, 130))]
+    ag, _ = make([J(action="click", element=1), J(action="done")], dry_run=False)
+    ag.run("テスト")
+    assert env["acted"] == ["moveTo", "click"]                           # 入力欄はマウスでクリックしてフォーカス
+
+
+def test_unknown_element_number_is_invalid(env):
+    env["el"]["marks"] = [mk(1, "戻る", "ButtonControl", (0, 40, 40, 80))]
+    ag, client = make([J(action="click", element=9), J(action="done")], dry_run=False)
+    ag.run("テスト")
+    assert env["acted"] == [] and "element 9" in client.calls[1]["prompt"]
+
+
+def test_element_name_is_checked_by_safety(env):
+    env["el"]["marks"] = [mk(1, "Nobuyuki として続行, someone@example.com", "ButtonControl", (0, 0, 300, 40))]
+    ag, _ = make([J(action="click", element=1, reason="閉じる")], dry_run=False)
+    s = ag.run("テスト", )
+    assert s["result"] == "stopped" and env["acted"] == []               # 確認で「いいえ」（既定）→ 押さない
+
+
+def test_marks_drawn_and_prompt_without_marks(env):
+    from PIL import Image
+    from voice_agent import screen as scr
+    img = scr.draw_marks(Image.new("RGB", (1512, 850), (255, 255, 255)),
+                         [mk(12, "送信", "ButtonControl", (1200, 560, 1260, 600))], (1920, 1080))
+    assert img.getpixel((int(1200 * 1512 / 1920) + 1, int(580 * 850 / 1080))) != (255, 255, 255)
+    ag, client = make([J(action="done")])
+    ag.run("テスト")
+    assert "ELEMENTS (numbered on the screenshot): none" in client.calls[0]["prompt"]
+
+
+
+# ---- 測定: バージョン・自動判定・人の判定 ----
+
+def test_done_is_verified_from_final_screen(env):
+    class Verifying(FakeClient):
+        def chat(self, messages, image=None, thinking="off", **kw):
+            if "You check whether a task" in messages[0]["content"]:
+                self.calls.append({"verify": True, "prompt": messages[-1]["content"]})
+                return {"content": J(achieved="no", evidence="404 のページ")}
+            return super().chat(messages, image=image, thinking=thinking, **kw)
+    cfg = {**CFG, "eval": {"verify": True}}
+    client = Verifying([J(action="done", reason="ページが表示された")])
+    ag = agent_mod.Agent(cfg, hooks=QuietHooks(), dry_run=False, client=client)
+    s = ag.run("三井情報のページを開いて")
+    assert client.calls[-1].get("verify") and "AGENT'S CLAIM: ページが表示された" in client.calls[-1]["prompt"]
+    assert s["verify"]["achieved"] == "no" and s["warnings"]                  # 「達成されていない」を警告に
+    d, _ = rows_of(env, s)
+    saved = json.loads((d / "summary.json").read_text(encoding="utf-8"))
+    assert saved["verify"]["achieved"] == "no" and "version" in saved
+    assert "自動判定: 未達成" in (d / "report.html").read_text(encoding="utf-8")
+
+
+def test_human_label_is_saved_and_shown(env):
+    from voice_agent import evaluate
+    ag, _ = make([J(action="done")], dry_run=False)
+    s = ag.run("テスト")
+    evaluate.set_human_label(s["dir"], "failure", "test")
+    d = env["tmp"] / s["dir"].replace("\\", "/").split("/")[-1]
+    saved = json.loads((d / "summary.json").read_text(encoding="utf-8"))
+    assert saved["human_label"] == "failure" and evaluate.outcome(saved) == "failure"
+    assert "人の判定: 失敗" in (d / "report.html").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("summary,expect", [
+    ({"result": "done"}, "unknown"),                                             # 自己申告だけでは成功にしない
+    ({"result": "done", "verify": {"achieved": "yes"}}, "success"),
+    ({"result": "done", "verify": {"achieved": "no"}}, "failure"),
+    ({"result": "done", "verify": {"achieved": "yes"}, "human_label": "failure"}, "failure"),   # 人の判定が優先
+    ({"result": "stopped"}, "failure"),
+    ({"result": "fail", "human_label": "success"}, "success"),
+])
+def test_outcome(summary, expect):
+    from voice_agent import evaluate
+    assert evaluate.outcome(summary) == expect

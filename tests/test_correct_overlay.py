@@ -211,3 +211,64 @@ def test_friendly_labels():
     assert agent_mod.friendly({"action": "click"}) == "クリック"
     assert agent_mod.friendly({"action": "type", "text": "三井情報"}) == "入力「三井情報」"
     assert agent_mod.friendly({"action": "open_app", "text": "Edge"}) == "Edge を開く"
+
+
+# ---- 測定: 実行のあとの「うまくいきましたか？」と、音声ごとの記録 ----
+
+def make_run_dir(tmp_path):
+    d = tmp_path / "20261119-000000-test"
+    d.mkdir()
+    (d / "summary.json").write_text(json.dumps({"task": "t", "source": "voice", "result": "done", "reason": "",
+                                                "steps": 1, "secs": 1.0, "thinking_steps": 0,
+                                                "model_secs_total": 0.1, "dir": str(d)}), encoding="utf-8")
+    (d / "ledger.jsonl").write_text("", encoding="utf-8")
+    return d
+
+
+def run_with_feedback(tmp_path, events_after, esc_pressed=False):
+    import threading
+    d = make_run_dir(tmp_path)
+    esc = threading.Event()
+    hooks = UiHooks()
+    ptt = FakePTT(["down", "up"])
+
+    def run_task(text, wav, meta):
+        ptt.events.items += events_after                 # 実行のあとに押されるキー
+        if esc_pressed:
+            threading.Timer(0.2, esc.set).start()
+        return {"result": "done", "steps": 1, "secs": 1.0, "dir": str(d)}
+    loop = voice.VoiceLoop({"voice": {}, "eval": {"feedback_secs": 1}}, None, hooks, tts.Speaker(),
+                           FakeSTT(["メモ帳を開いて"]), ptt, FakeMic(1), run_task=run_task, esc=esc, log_dir=tmp_path)
+
+    def stopper():
+        import time
+        time.sleep(1.8)
+        loop.running = False
+    th = threading.Thread(target=stopper)
+    th.start()
+    loop.run()
+    th.join()
+    return json.loads((d / "summary.json").read_text(encoding="utf-8")), hooks, tmp_path
+
+
+def test_feedback_f9_means_success(tmp_path):
+    s, hooks, _ = run_with_feedback(tmp_path, ["down", "up"])
+    assert s["human_label"] == "success"
+    assert any(u[0] == "feedback" for u in hooks.uis)
+
+
+def test_feedback_esc_means_failure(tmp_path):
+    s, _, _ = run_with_feedback(tmp_path, [], esc_pressed=True)
+    assert s["human_label"] == "failure"
+
+
+def test_feedback_skipped_when_no_answer(tmp_path):
+    s, _, _ = run_with_feedback(tmp_path, [])
+    assert "human_label" not in s
+
+
+def test_voice_log_keeps_audio_and_text(tmp_path):
+    _, _, root = run_with_feedback(tmp_path, [])
+    entries = [json.loads(line) for line in (root / "voice_log.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert entries[0]["outcome"] == "ran" and entries[0]["heard"] == "メモ帳を開いて"
+    assert (root / entries[0]["wav"]).exists()

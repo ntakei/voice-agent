@@ -33,6 +33,22 @@ class Session:
         self.steps: list[dict] = []
         (self.dir / "task.txt").write_text(f"{task}\n\nsource: {source}\n", encoding="utf-8")
 
+    @classmethod
+    def reload(cls, run_dir: Path) -> "Session":
+        """保存済みの実行フォルダを読み直す（あとから評価を足して report.html を作り直すため）。"""
+        self = cls.__new__(cls)
+        self.dir = Path(run_dir)
+        s = json.loads((self.dir / "summary.json").read_text(encoding="utf-8"))
+        self.task, self.source = s.get("task", ""), s.get("source", "")
+        known = {"task", "source", "result", "reason", "warnings", "steps", "secs", "thinking_steps",
+                 "model_secs_total", "dir", "verify", "human_label", "human_label_how", "human_label_at"}
+        self.meta = {k: v for k, v in s.items() if k not in known}
+        self.t0 = 0.0
+        ledger = self.dir / "ledger.jsonl"
+        self.steps = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()] \
+            if ledger.exists() else []
+        return self
+
     def path(self, name: str) -> Path:
         return self.dir / name
 
@@ -100,6 +116,15 @@ class Session:
                            for w in s.get("warnings", []))
         if s.get("warnings") and s["result"] == "done":
             result_ja = "完了（要確認）"
+        # 評価（自動判定・人の判定）
+        ev = []
+        v = s.get("verify") or {}
+        if v:
+            vj = {"yes": "達成", "no": "未達成", "unclear": "不明"}.get(v.get("achieved"), v.get("achieved"))
+            ev.append(f"自動判定: {vj}" + (f"（{v.get('evidence')}）" if v.get("evidence") else ""))
+        if s.get("human_label"):
+            ev.append("人の判定: " + {"success": "成功", "failure": "失敗"}.get(s["human_label"], s["human_label"]))
+        eval_box = f'<p class="evalline">{e(" · ".join(ev))}</p>' if ev else ""
         page = f"""<!doctype html><html lang="ja"><head><meta charset="utf-8"><title>実行レポート</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
@@ -111,13 +136,13 @@ h1{{font-size:22px;margin:0 0 4px}} .badge{{color:#fff;padding:2px 10px;border-r
 section{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:14px 0}}
 h3{{margin:0 0 4px;font-size:16px}} .reason{{margin:2px 0}} .meta,.detail,.note{{color:var(--mute);font-size:13px;margin:2px 0}}
 .err{{color:var(--ng);margin:4px 0}} .warn{{color:var(--warn);font-weight:bold;margin:4px 0}}
-.warnbox{{border:2px solid var(--warn);border-radius:10px;padding:8px 12px;margin:10px 0}} img{{width:100%;border-radius:6px;border:1px solid var(--line);margin-top:8px}}
+.evalline{{font-weight:bold;margin:4px 0}} .warnbox{{border:2px solid var(--warn);border-radius:10px;padding:8px 12px;margin:10px 0}} img{{width:100%;border-radius:6px;border:1px solid var(--line);margin-top:8px}}
 pre{{white-space:pre-wrap;word-break:break-all;font-size:12px}} a{{color:inherit;font-size:13px}}
 </style></head><body>
 <h1>{e(s['task'])}</h1>
 <p><span class="badge {e(s['result'])}">{e(result_ja)}</span>
 &nbsp;{s['steps']} ステップ · {s['secs']} 秒 · モデル合計 {s['model_secs_total']} 秒 · 思考あり {s['thinking_steps']} 回
 {(' · ' + e(s['reason'])) if s['reason'] else ''}</p>
-<p class="meta">{e(' · '.join(f'{k}={v}' for k, v in self.meta.items()))}</p>
+{eval_box}<p class="meta">{e(' · '.join(f'{k}={v}' for k, v in self.meta.items()))}</p>
 {warn_box}{audio}{''.join(sections)}{final}</body></html>"""
         self.path("report.html").write_text(page, encoding="utf-8")

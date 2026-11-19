@@ -9,9 +9,10 @@
 """
 import argparse
 import os
+import threading
 import time
 
-from . import config, confirm_ui
+from . import config, confirm_ui, evaluate
 from .agent import Agent, Hooks
 from .stopkey import StopKey
 
@@ -77,7 +78,12 @@ def main(argv=None) -> None:
     agent = Agent(cfg, hooks=hooks, dry_run=dry, max_steps=args.max_steps,
                   think_normal=args.think_normal, think_stuck=args.think_stuck)
     stop_key = sc.get("stop_key", "esc")
-    StopKey(agent.stop, stop_key).start()
+    esc = threading.Event()        # Esc が押された（実行中なら停止、「うまくいきましたか？」には「いいえ」）
+
+    def on_stop():
+        agent.stop()
+        esc.set()
+    StopKey(on_stop, stop_key).start()
     mode = "dry-run（操作しません）" if agent.dry_run else "実際に操作します"
     print(f"モデル {cfg['model']['name']} / {mode} / 思考 通常={agent.think_normal} 行き詰まり={agent.think_stuck} "
           f"/ 最大 {agent.max_steps} ステップ")
@@ -90,10 +96,21 @@ def main(argv=None) -> None:
         summary = agent.run(task)
         print(f"結果: {summary['result']}  {summary['steps']} ステップ  {summary['secs']} 秒")
         print(f"レポート: {os.path.join(summary['dir'], 'report.html')}")
+        if (cfg.get("eval") or {}).get("ask_feedback", True) and not agent.dry_run and not args.task:
+            # 対話モードのときだけ聞く（1回だけ実行するときは聞かない）
+            hooks.ui("feedback", "うまくいきましたか？", "端末で y / n を入力（Enter で省略）")
+            try:
+                ans = input("うまくいきましたか？ [y = はい / n = いいえ / Enter = 省略] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                ans = ""
+            if ans in ("y", "yes", "はい"):
+                evaluate.set_human_label(summary["dir"], "success", "text-mode input")
+            elif ans in ("n", "no", "いいえ"):
+                evaluate.set_human_label(summary["dir"], "failure", "text-mode input")
 
     try:
         if args.voice:
-            run_voice(args, cfg, agent, hooks, speaker, overlay)
+            run_voice(args, cfg, agent, hooks, speaker, overlay, esc)
             return
         if args.task:
             run_one(" ".join(args.task))
@@ -150,7 +167,7 @@ def screen_context(agent, cfg):
     return context
 
 
-def run_voice(args, cfg, agent, hooks, speaker, overlay=None) -> None:
+def run_voice(args, cfg, agent, hooks, speaker, overlay=None, esc=None) -> None:
     from . import stt
     from .correct import Corrector
     from .ptt import PushToTalk
@@ -188,7 +205,7 @@ def run_voice(args, cfg, agent, hooks, speaker, overlay=None) -> None:
         print("聞き間違いの補正: あり（確信度が低いときは聞き直します）" if cc.get("ask_again_on_low", True)
               else "聞き間違いの補正: あり")
     loop = VoiceLoop(cfg, agent, hooks, speaker or Speaker(), tr, ptt, mic,
-                     corrector=corrector, context=screen_context(agent, cfg))
+                     corrector=corrector, context=screen_context(agent, cfg), esc=esc, log_dir=config.RUNS_DIR)
     try:
         loop.run()
     except KeyboardInterrupt:

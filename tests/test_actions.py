@@ -271,3 +271,11 @@ def test_wait_dry_run_does_not_sleep(no_input, monkeypatch):
     monkeypatch.setattr(executor.threading.Event, "wait", lambda self, t=None: (_ for _ in ()).throw(AssertionError))
     r = executor.Executor(SCREEN, APPS, dry_run=True).execute(check({"action": "wait", "seconds": 5})[0], IMG)
     assert r.executed is False and "5 秒待つ" in r.detail
+
+
+
+def test_element_field_aliases():
+    for k, v in (("element", 3), ("id", "3"), ("mark", "#3"), ("index", "[3]")):
+        assert actions.normalize({"action": "click", k: v})["element"] == 3
+    assert "element" not in actions.normalize({"action": "click", "element": "abc"})
+    assert "element" not in actions.normalize({"action": "type", "element": 3, "text": "a"})

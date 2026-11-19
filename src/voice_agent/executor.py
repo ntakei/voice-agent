@@ -96,6 +96,8 @@ class Executor:
             return None
         return ExecResult(label, point, True, f"{what} を UI Automation で直接押した")
 
+    press_element = press_link   # 番号で選んだボタン・リンクも同じ方法で押す
+
     def _dry_detail(self, a: dict) -> str:
         t = a["action"]
         if t == "type":

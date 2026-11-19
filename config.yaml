@@ -44,6 +44,14 @@ agent:
   think_after_bad_json: 2   # 無効な返答がこの回数続いたら思考を強める
   think_after_blocked: 2    # 繰り返しでブロックされた手がこの回数続いたら思考を強める
   give_up_after_blocks: 4   # 1回の実行でブロックがこの回数に達したら、行き詰まりとして打ち切る（0 = 打ち切らない）
+  # 番号で選ばせる（Set-of-Mark）: 前面アプリのボタン・リンク・入力欄などを UI Automation で集め、
+  # スクリーンショットに番号付きの枠を描いて、モデルには番号で答えさせる（座標の推測より確実）。
+  # 番号で選ばれたボタン・リンクは、マウスではなく UI Automation で直接押す
+  som:
+    enabled: true
+    draw: true              # 番号付きの枠を画像に描く（false なら一覧の文字だけ渡す）
+    max_elements: 80        # 番号を付ける部品の最大数（上から順）
+    budget_secs: 1.0        # 部品を集める時間の上限（ブラウザのページは部品が多い）
   repeat_max: 3             # 同じクリック・open_app を直近10手でこの回数行っていたら、次はブロック（間に別の操作をはさんでも）
   # リンクをマウスでクリックせず、UI Automation で直接押すブラウザ（Edge はマウスのクリックでリンクが開かなかった）
   invoke_links_in: [msedge.exe]
@@ -194,6 +202,13 @@ voice:
     # 読み上げる種類: start（わかりました）/ reason（各操作の理由）/ confirm（確認のお願い）/ blocked / result（結果）
     speak: [start, reason, confirm, blocked, result]
 
+
+# 成功率を測る（集計は scripts/eval_report.py、音声認識の精度は scripts/asr_eval.py）
+eval:
+  verify: true              # 「完了」した実行を、終了時の画面で別に判定する（自動判定。約4秒）
+  ask_feedback: true        # 実行のあと「うまくいきましたか？」と聞く（音声モード: F9 = はい / Esc = いいえ）
+  feedback_secs: 6          # この秒数で答えがなければ聞くのをやめる（判定なし）
+  voice_log: true           # 音声ごとに録音と認識結果を runs/voice_log.jsonl・runs/_voice/ に残す
 
 # 画面上の状態表示（Spotlight のような、画面の上に浮かぶバー）
 #   クリックは素通りし、フォーカスも取らない。スクリーンショットには写らない（モデルには見えない）

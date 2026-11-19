@@ -5,7 +5,8 @@ Coordinates: pixel coordinates of the screenshot you are given, which is {w}x{h}
 
 Reply with ONE JSON object and nothing else:
 {{"action": "click" | "double_click" | "type" | "key" | "scroll" | "open_app" | "wait" | "done" | "fail",
- "x": <number>, "y": <number>,   (click and double_click: the CENTER of the element; scroll: optional)
+ "element": <number>,            (click and double_click: the NUMBER of a marked element. Preferred.)
+ "x": <number>, "y": <number>,   (click and double_click only when the target has no number: its CENTER; scroll: optional)
  "text": "<string>",             (type: the text to enter / key: a key combo such as "ctrl+l", "enter", "alt+f4" / open_app: the app name)
  "dy": <integer>,                (scroll only: positive scrolls up, negative scrolls down, 1 = one wheel notch)
  "seconds": <number>,            (wait only: 1 to 10)
@@ -14,6 +15,9 @@ Reply with ONE JSON object and nothing else:
  "reason": "<短い日本語で、この操作をする理由（30文字以内）>"}}
 
 Rules:
+- Buttons, links, input fields, tabs and similar elements of the front window have NUMBERED BOXES on the screenshot
+  and are listed under ELEMENTS. To click one of them, set "element" to its number and leave out x and y.
+  Use x and y only for a target that has no number.
 - To open or switch to an app, use open_app with the app name in "text". Available apps: {apps}.
 - Keys and typing go to the FRONT app shown in the message. If the front app is not the one you need, use open_app first.
 - Before typing, make sure the right input field is focused (click it first if needed).
@@ -43,7 +47,8 @@ def speech_note(heard: str, task: str, vocabulary: list[str]) -> str:
 
 
 def user_prompt(task: str, history: list[str], front_app: str, changed: bool | None = None,
-                blocked: list[str] | None = None, first_index: int = 1, note: str = "") -> str:
+                blocked: list[str] | None = None, first_index: int = 1, note: str = "",
+                elements: list[str] | None = None) -> str:
     """history は直近ステップの1行要約（古い順）。first_index はその先頭のステップ番号。
     note は音声で指示されたときの注意書き（speech_note）。"""
     lines = [f"TASK: {task}"] + ([note] if note else []) + [""]
@@ -57,5 +62,8 @@ def user_prompt(task: str, history: list[str], front_app: str, changed: bool | N
     if blocked:
         lines.append("\nBLOCKED actions (already tried without effect; choose something else): " + "; ".join(blocked))
     lines.append(f"\nFront app (receives keys and typing): {front_app or 'unknown'}")
+    if elements is not None:
+        lines.append("ELEMENTS (numbered on the screenshot): " + ("; ".join(elements) if elements else
+                                                                  "none - use x and y"))
     lines.append("Return the next ONE action as JSON.")
     return "\n".join(lines)

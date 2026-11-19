@@ -2,9 +2,13 @@
 
 エージェント本体とは Hooks（status / say / confirm）と agent.run() だけでつながる（疎結合）。
 """
+import json
 import queue
+import threading
 import time
+from pathlib import Path
 
+from . import evaluate
 from . import recorder as rec
 from .correct import to_meta
 from .tts import Speaker
@@ -12,10 +16,18 @@ from .tts import Speaker
 
 class VoiceLoop:
     def __init__(self, cfg: dict, agent, hooks, speaker: Speaker, transcriber, ptt, recorder: rec.Recorder,
-                 run_task=None, corrector=None, context=None):
+                 run_task=None, corrector=None, context=None, esc: threading.Event | None = None,
+                 log_dir: Path | None = None):
         """corrector: 聞き間違いの補正（correct.Corrector）。None なら補正しない。
-        context: () -> (前面アプリ名, 画面の言葉のリスト)。補正の手がかり。"""
+        context: () -> (前面アプリ名, 画面の言葉のリスト)。補正の手がかり。
+        esc: Esc が押されたら立つイベント（「うまくいきましたか？」に「いいえ」と答える）。
+        log_dir: 音声ごとの記録（voice_log.jsonl と録音）を残すフォルダ。None なら残さない。"""
         vc = cfg.get("voice") or {}
+        ec = cfg.get("eval") or {}
+        self.ask_feedback = bool(ec.get("ask_feedback", True)) and esc is not None
+        self.feedback_secs = float(ec.get("feedback_secs", 6))
+        self.esc = esc
+        self.log_dir = Path(log_dir) if log_dir and ec.get("voice_log", True) else None
         cc = vc.get("correction") or {}
         self.corrector, self.context = corrector, context
         self.ask_again_on_low = bool(cc.get("ask_again_on_low", True))
@@ -28,6 +40,48 @@ class VoiceLoop:
         self.run_task = run_task or (lambda text, wav, meta: agent.run(text, source="voice", audio_wav=wav,
                                                                          extra_meta=meta))
         self.running = True
+
+    def _log(self, entry: dict, audio=None) -> None:
+        """音声ごとの記録（音声認識の精度の測定用。scripts/asr_eval.py で使う）。"""
+        if self.log_dir is None:
+            return
+        try:
+            ts = time.strftime("%Y%m%d-%H%M%S")
+            if audio is not None and audio.size:
+                (self.log_dir / "_voice").mkdir(parents=True, exist_ok=True)
+                wav = self.log_dir / "_voice" / f"{ts}-{int(time.time() * 1000) % 1000:03d}.wav"
+                wav.write_bytes(rec.to_wav_bytes(audio))
+                entry["wav"] = str(wav.relative_to(self.log_dir))
+            with open(self.log_dir / "voice_log.jsonl", "a", encoding="utf-8") as f:
+                f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), **entry}, ensure_ascii=False) + "\n")
+        except Exception:  # noqa: BLE001  記録に失敗しても動作は続ける
+            pass
+
+    def _feedback(self, summary: dict) -> None:
+        """実行のあとに「うまくいきましたか？」と聞く（F9 = はい / Esc = いいえ / 答えなければ判定なし）。"""
+        if not self.ask_feedback or not summary or not summary.get("dir") or summary.get("dry_run"):
+            return
+        key = self.ptt.key.upper()
+        self._drain()
+        self.esc.clear()
+        self.hooks.status("feedback", f"うまくいきましたか？（{key} = はい / Esc = いいえ / "
+                                      f"{self.feedback_secs:.0f} 秒で省略）")
+        self._ui("feedback", "うまくいきましたか？", f"{key} = はい ・ Esc = いいえ ・ {self.feedback_secs:.0f} 秒で省略")
+        end = time.time() + self.feedback_secs
+        label = None
+        while self.running and time.time() < end and label is None:
+            if self.esc.is_set():
+                label = "failure"
+                break
+            try:
+                if self.ptt.events.get(timeout=0.1) == "down":
+                    label = "success"
+            except queue.Empty:
+                pass
+        if label:
+            evaluate.set_human_label(summary["dir"], label, "voice-mode key")
+            self.hooks.status("feedback", "→ " + ("成功として記録しました" if label == "success" else "失敗として記録しました"))
+        self._drain()
 
     def _ui(self, state: str, main: str, sub: str = "") -> None:
         ui = getattr(self.hooks, "ui", None)
@@ -83,6 +137,8 @@ class VoiceLoop:
         self._ui("transcribing", "認識しています…", f"音声 {secs:.1f} 秒")
         tr = self.transcriber.transcribe(audio)
         if not tr.text:
+            self._log({"outcome": "dropped", "heard": tr.raw, "dropped": tr.dropped,
+                       "audio_secs": round(tr.audio_secs, 2)}, audio)
             self.hooks.status("ignored", f"聞き取れませんでした（{tr.dropped}）")
             self.speaker.say("聞き取れませんでした。もう一度お願いします。")
             self._ui("ignored", "聞き取れませんでした", "もう一度お願いします")
@@ -107,12 +163,20 @@ class VoiceLoop:
             if tr.raw != tr.text:
                 meta["stt_raw"] = tr.raw
             task = tr.text
+            entry = {"heard": tr.text, "raw": tr.raw, "audio_secs": round(tr.audio_secs, 2),
+                     "stt_model": meta.get("stt_model", "")}
             if self.corrector is not None:
                 task = self._correct(tr.text, meta)
+                entry.update({k: meta[k] for k in ("corrected", "correction_confidence", "correction_reason")
+                              if k in meta})
                 if task is None:
+                    self._log({**entry, "outcome": "asked_again"}, audio)
                     continue
             self.recent.append(task)
             summary = self.run_task(task, rec.to_wav_bytes(audio), meta)
+            self._log({**entry, "outcome": "ran", "task": task,
+                       "run": Path(summary["dir"]).name if summary and summary.get("dir") else ""}, audio)
+            self._feedback(summary)
             if summary:
                 self.hooks.status("result", f"結果: {summary['result']}  {summary['steps']} ステップ  "
                                             f"{summary['secs']} 秒\nレポート: {summary['dir']}\\report.html")

@@ -114,6 +114,33 @@ def settle(stop_event: threading.Event | None = None, min_wait: float = 0.15, ma
 
 
 COLORS = [(255, 40, 40), (0, 200, 255), (60, 220, 60), (255, 170, 0), (220, 80, 255), (255, 255, 0)]
+MARK_COLORS = [(230, 0, 120), (0, 110, 230), (0, 150, 70), (200, 90, 0), (120, 40, 200)]
+
+
+def draw_marks(img: Image.Image, marks, screen_size: tuple[int, int]) -> Image.Image:
+    """番号で選ばせる（Set-of-Mark）ための、番号付きの枠を描いたコピー。
+
+    marks は uia.Mark（実画面のピクセルの矩形）。モデルに送る画像の大きさに合わせて縮める。
+    番号の札は枠の左上の外側（はみ出すときは内側）に、小さく描く（中身の文字をなるべく隠さない）。
+    """
+    out = img.copy().convert("RGB")
+    d = ImageDraw.Draw(out, "RGBA")
+    sx, sy = out.width / screen_size[0], out.height / screen_size[1]
+    font = _font(max(11, out.width // 120))
+    for m in marks:
+        c = MARK_COLORS[m.id % len(MARK_COLORS)]
+        l, t, r, b = m.rect
+        box = [l * sx, t * sy, r * sx - 1, b * sy - 1]
+        d.rectangle(box, outline=(*c, 255), width=2)
+        tag = str(m.id)
+        tw = d.textlength(tag, font=font) + 6
+        th = font.size + 4
+        tx, ty = box[0], box[1] - th
+        if ty < 0:
+            ty = box[1]
+        d.rectangle([tx, ty, tx + tw, ty + th], fill=(*c, 235))
+        d.text((tx + 3, ty + 1), tag, font=font, fill=(255, 255, 255, 255))
+    return out
 
 
 def mark_points(img: Image.Image, points: list[tuple[float, float, str]], radius: int | None = None,
