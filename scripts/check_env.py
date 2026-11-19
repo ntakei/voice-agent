@@ -1,8 +1,8 @@
 """環境確認スクリプト（マウス・キーボードは動かさない）。
 
-  python -m uv run python scripts/check_env.py [--base-url http://172.25.5.48:8000/v1]
+  python -m uv run python scripts/check_env.py [--base-url URL]   # 省略時は config.yaml / .env の値
 
-確認内容: DPI対応 / import / 画面サイズ / 前面ウィンドウ / 日本語音声 / マイク / モデルAPI
+確認内容: DPI対応 / import / 画面サイズ / 前面ウィンドウ / 日本語音声（SAPI）/ マイク / 音声認識モデル / モデルAPI
 """
 import argparse
 import ctypes
@@ -68,11 +68,24 @@ def check_front():
 
 
 def check_voice():
-    import pyttsx3
-    voices = pyttsx3.init().getProperty("voices")
-    names = [v.name for v in voices]
-    ja = [v.name for v in voices if "japan" in (v.name + v.id).lower() or "ja" in str(v.languages).lower()]
+    import win32com.client
+    names = [t.GetDescription() for t in win32com.client.Dispatch("SAPI.SpVoice").GetVoices()]
+    ja = [n for n in names if "japanese" in n.lower() or "日本語" in n]
     return bool(ja), f"日本語={ja} 全音声={names}"
+
+
+def check_stt_model():
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    sys.path.insert(0, str(root / "src"))
+    from faster_whisper.utils import _MODELS
+    from voice_agent import config
+    name = ((config.load().get("voice") or {}).get("stt") or {}).get("model", "small")
+    repo = _MODELS.get(name, name)
+    found = list((root / "models").glob(f"models--{repo.replace('/', '--')}/snapshots/*/model.bin"))
+    return bool(found), (f"{name}（models/ にあり）" if found else
+                         f"{name} が models/ にない → scripts/download_models.py を実行")
 
 
 def check_mic():
@@ -89,8 +102,14 @@ def check_model(base):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base-url", default="http://172.25.5.48:8000/v1")
+    ap.add_argument("--base-url", help="省略時は config.yaml（.env の VA_BASE_URL があればそちら）")
     args = ap.parse_args()
+    if not args.base_url:
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+        from voice_agent import config
+        args.base_url = config.load()["model"]["base_url"]
 
     report(DPI_RESULT is None, "SetProcessDpiAwareness(2)", str(DPI_RESULT or ""))
     check("import", check_imports)
@@ -98,4 +117,5 @@ if __name__ == "__main__":
     check("前面ウィンドウ", check_front)
     check("日本語音声 (SAPI5)", check_voice)
     check("マイク入力デバイス", check_mic)
+    check("音声認識モデル", check_stt_model)
     check("モデルAPI /models", lambda: check_model(args.base_url))
