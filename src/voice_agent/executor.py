@@ -3,6 +3,8 @@
 安全ルール（確認・パスワード拒否・前面アプリ照合など）は safety.py でこの手前に掛ける（フェーズ6）。
 """
 import os
+import shutil
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -91,16 +93,34 @@ class Executor:
         if existing:
             ok = winapi.activate(existing.hwnd)
             return ExecResult(label, None, True, f"前面化{'成功' if ok else '失敗'}: {existing.describe()}")
-        os.startfile(app.launch)  # App Paths で解決される（msedge.exe など）
+        try:
+            how = launch(app.launch)
+        except OSError as e:
+            return ExecResult(label, None, False, f"起動に失敗: {app.launch}（{type(e).__name__}: {e}）")
         # ウィンドウが出るまで最大5秒待つ（画面の落ち着き待ちはループ側で行う）
         end = time.time() + 5
         while time.time() < end and not self.stop_event.is_set():
             w = winapi.find_window(app.process)
             if w:
                 winapi.activate(w.hwnd)
-                return ExecResult(label, None, True, f"起動: {w.describe()}")
+                return ExecResult(label, None, True, f"起動（{how}）: {w.describe()}")
             time.sleep(0.25)
-        return ExecResult(label, None, True, f"起動したがウィンドウが見つからない: {app.launch}")
+        return ExecResult(label, None, True, f"起動したがウィンドウが見つからない: {app.launch}（{how}）")
+
+
+def launch(exe: str) -> str:
+    """許可リストのアプリを起動する。戻り値は使った方法（ログ用）。
+
+    1. PATH 上にあれば CreateProcess（subprocess）。Windows 11 のメモ帳などの「アプリ実行エイリアス」は
+       os.startfile（ShellExecute）だと WinError 5 になることがあるため、こちらを優先する。
+    2. PATH になければ os.startfile（App Paths で解決。msedge.exe など）。
+    """
+    path = shutil.which(exe)
+    if path:
+        subprocess.Popen([path], close_fds=True, creationflags=subprocess.DETACHED_PROCESS)
+        return "CreateProcess"
+    os.startfile(exe)
+    return "ShellExecute"
 
 
 def paste_text(text: str) -> None:

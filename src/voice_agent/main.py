@@ -24,7 +24,10 @@ class ConsoleHooks(Hooks):
     def confirm(self, question: str) -> bool:
         print(question, flush=True)
         ok = confirm_ui.ask(question, timeout_secs=self.timeout_secs)
-        print("→ " + ("はい（実行）" if ok else "いいえ（中止）"), flush=True)
+        how = {"yes": "はい（実行）", "no": "いいえ（中止）", "timeout": "時間切れ → いいえ（中止）",
+               "closed": "ダイアログを閉じた → いいえ（中止）"}.get(confirm_ui.last_answer, str(ok))
+        self.last_answer = confirm_ui.last_answer
+        print("→ " + how, flush=True)
         return ok
 
 

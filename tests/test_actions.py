@@ -175,3 +175,33 @@ def test_paste_text_restores_clipboard(monkeypatch):
     executor.paste_text("こんにちは")
     assert pasted == [(("ctrl", "v"), "こんにちは")]
     assert clip["v"] == "元の内容"
+
+
+# ---- アプリの起動方法 ----
+
+def test_launch_prefers_createprocess(monkeypatch):
+    calls = []
+    monkeypatch.setattr(executor.shutil, "which", lambda exe: r"C:\Windows\System32\notepad.exe")
+    monkeypatch.setattr(executor.subprocess, "Popen", lambda args, **k: calls.append(("popen", args)))
+    monkeypatch.setattr(executor.os, "startfile", lambda exe: calls.append(("startfile", exe)))
+    assert executor.launch("notepad.exe") == "CreateProcess"
+    assert calls == [("popen", [r"C:\Windows\System32\notepad.exe"])]
+
+
+def test_launch_falls_back_to_shellexecute(monkeypatch):
+    calls = []
+    monkeypatch.setattr(executor.shutil, "which", lambda exe: None)       # msedge.exe は PATH にない
+    monkeypatch.setattr(executor.subprocess, "Popen", lambda args, **k: calls.append(("popen", args)))
+    monkeypatch.setattr(executor.os, "startfile", lambda exe: calls.append(("startfile", exe)))
+    assert executor.launch("msedge.exe") == "ShellExecute"
+    assert calls == [("startfile", "msedge.exe")]
+
+
+def test_open_app_launch_failure_is_reported_not_raised(monkeypatch):
+    def denied(exe):
+        raise PermissionError(5, "アクセスが拒否されました。")
+    monkeypatch.setattr(executor.winapi, "find_window", lambda procs: None)
+    monkeypatch.setattr(executor, "launch", denied)
+    a, _ = check({"action": "open_app", "text": "メモ帳"})
+    r = executor.Executor(SCREEN, APPS, dry_run=False).execute(a, IMG)
+    assert r.executed is False and r.detail.startswith("起動に失敗")

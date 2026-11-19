@@ -1,6 +1,7 @@
 """前面ウィンドウ・プロセス名の取得とウィンドウの前面化（pywin32）。"""
 import ctypes
 import os
+import time
 from dataclasses import dataclass
 
 import win32api
@@ -97,14 +98,52 @@ def find_window(process_names: list[str]) -> WindowInfo | None:
     return None
 
 
+# 割り当てのない仮想キー。前面化の制限を解くための「入力」として送っても、どのアプリにも意味を持たない。
+# ※ Alt（VK_MENU）は使わない: メモ帳などがキーヒント待ちになり、その後のキー入力が吸い込まれる（フェーズ6で確認）。
+#   Shift も使わない: 日本語 IME の英数切り替えになることがある。
+_VK_UNASSIGNED = 0x07
+
+
+def _wait_foreground(hwnd: int, secs: float) -> bool:
+    """切り替えは非同期なので、少し待ってから確かめる。"""
+    end = time.time() + secs
+    while time.time() < end:
+        if win32gui.GetForegroundWindow() == hwnd:
+            return True
+        time.sleep(0.05)
+    return win32gui.GetForegroundWindow() == hwnd
+
+
+def _set_foreground(hwnd: int) -> None:
+    """今の前面スレッドの入力に一時的につないでから前面化する（AttachThreadInput）。"""
+    user32 = ctypes.windll.user32
+    cur = win32api.GetCurrentThreadId()
+    fg = win32gui.GetForegroundWindow()
+    fg_tid = win32process.GetWindowThreadProcessId(fg)[0] if fg else 0
+    attached = bool(fg_tid and fg_tid != cur and user32.AttachThreadInput(cur, fg_tid, True))
+    try:
+        win32gui.BringWindowToTop(hwnd)
+        try:
+            win32gui.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+    finally:
+        if attached:
+            user32.AttachThreadInput(cur, fg_tid, False)
+
+
 def activate(hwnd: int) -> bool:
-    """ウィンドウを前面にする。Windows は他プロセスからの前面化を制限するので Alt を押して解除する。"""
+    """ウィンドウを前面にする（Alt キーは送らない）。"""
     try:
         if win32gui.IsIconic(hwnd):
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-        win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
-        win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
-        win32gui.SetForegroundWindow(hwnd)
-        return win32gui.GetForegroundWindow() == hwnd
+        _set_foreground(hwnd)
+        if _wait_foreground(hwnd, 0.5):
+            return True
+        # まだ前面にならなければ、意味のないキーを1回送って前面化の制限を解き、もう一度試す
+        win32api.keybd_event(_VK_UNASSIGNED, 0, 0, 0)
+        win32api.keybd_event(_VK_UNASSIGNED, 0, win32con.KEYEVENTF_KEYUP, 0)
+        _set_foreground(hwnd)
+        return _wait_foreground(hwnd, 1.0)
     except Exception:
         return False

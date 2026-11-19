@@ -270,9 +270,13 @@ class Agent:
                         self.hooks.say("この操作を実行してよいか、確認してください。")
                         ok = bool(self.hooks.confirm(question))
                         row["confirmed"] = ok
+                        how = getattr(self.hooks, "last_answer", "")
+                        if how:
+                            row["confirm_answer"] = how  # yes / no / timeout / closed
                         if not ok:
                             s.log_step(row, record)
-                            result, reason = "stopped", f"確認で拒否された: {label}"
+                            result, reason = "stopped", (f"確認が時間切れ: {label}" if how == "timeout"
+                                                         else f"確認で拒否された: {label}")
                             break
                 blocked_run = 0
 
@@ -282,12 +286,25 @@ class Agent:
                 self.hooks.status("acting", f"[{step:02d}] {r['secs']:.1f}s {'(思考 ' + thinking + ') ' if thinking != 'off' else ''}"
                                             f"{label} — {a.get('reason', '')}")
                 self.hooks.say(a.get("reason", ""))
-                res = ex.execute(a, sent.size)
+                try:
+                    res = ex.execute(a, sent.size)
+                except pyautogui.FailSafeException:
+                    s.log_step({**row, "error": "FAILSAFE"}, record)
+                    raise
+                except Exception as e:  # noqa: BLE001  実行中の失敗もそのステップのログに残してから止める
+                    row["error"] = f"実行中のエラー: {type(e).__name__}: {e}"
+                    s.log_step(row, record)
+                    result, reason = "fail", row["error"]
+                    break
                 row.update(label=res.label, point=res.point, executed=res.executed, detail=res.detail)
                 if self.dry_run:
                     self.hooks.status("acting", f"     [dry-run] {res.label}" + (f"（{res.detail}）" if res.detail else ""))
+                elif res.detail:
+                    self.hooks.status("acting", f"     {res.detail}")
                 done_sigs.append(sig)
                 line = f"{label} — {a.get('reason', '')}"
+                if not self.dry_run and not res.executed and res.detail.startswith("起動に失敗"):
+                    line += f" -> FAILED: {res.detail}"
 
                 if not self.dry_run:
                     wait = ac.get("settle_max_open_app", 4.0) if t == "open_app" else ac.get("settle_max", 1.5)

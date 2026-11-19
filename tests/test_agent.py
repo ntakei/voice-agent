@@ -211,3 +211,36 @@ def test_failsafe_stops(env, monkeypatch):
     ag, _ = make([J(action="click", x=1, y=1)], dry_run=False)
     s = ag.run("テスト")
     assert s["result"] == "stopped" and "FAILSAFE" in s["reason"]
+
+
+def test_execute_error_is_logged_then_fails(env, monkeypatch):
+    def broken(*a, **k):
+        raise OSError("壊れた")
+    monkeypatch.setattr(executor.pyautogui, "hotkey", broken)
+    ag, _ = make([J(action="key", text="ctrl+s", target_app="メモ帳")], dry_run=False)
+    s = ag.run("テスト")
+    assert s["result"] == "fail" and "実行中のエラー" in s["reason"]
+    d = env["tmp"] / s["dir"].replace("\\", "/").split("/")[-1]
+    rows = [json.loads(l) for l in (d / "ledger.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert rows[-1]["step"] == 1 and "壊れた" in rows[-1]["error"]   # 失敗したステップもログに残る
+
+
+def test_open_app_failure_is_told_to_model(env, monkeypatch):
+    def denied(exe):
+        raise PermissionError(5, "アクセスが拒否されました。")
+    monkeypatch.setattr(executor, "launch", denied)
+    ag, client = make([J(action="open_app", text="メモ帳"), J(action="done")], dry_run=False)
+    assert ag.run("テスト")["result"] == "done"
+    assert "FAILED" in client.calls[1]["prompt"]
+
+
+def test_confirm_timeout_is_recorded(env):
+    class TimeoutHooks(QuietHooks):
+        last_answer = "timeout"
+
+        def confirm(self, q):
+            return False
+    client = FakeClient([J(action="click", x=1, y=1, risky=True, reason="送る")])
+    ag = agent_mod.Agent(CFG, hooks=TimeoutHooks(), dry_run=False, client=client)
+    s = ag.run("テスト")
+    assert s["result"] == "stopped" and "時間切れ" in s["reason"]
