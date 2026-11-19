@@ -98,14 +98,16 @@ STATES = {
     "blocked":      ((255, 159, 10), "!"),
     "ignored":      ((255, 159, 10), "?"),
     "feedback":     ((10, 132, 255), "?"),
+    "speaking":     ((90, 200, 250), "♪"),
+    "quit":         ((255, 159, 10), "■"),
     "done":         ((48, 209, 88), "✓"),
     "warn":         ((255, 159, 10), "✓"),
     "fail":         ((255, 69, 58), "✕"),
     "stopped":      ((142, 142, 147), "■"),
 }
-ANIMATED = {"listening", "transcribing", "correcting", "start", "looking", "thinking", "acting"}
+ANIMATED = {"listening", "transcribing", "correcting", "start", "looking", "thinking", "acting", "speaking"}
 # この時間がたったら待機中の表示に戻す
-SETTLE_SECS = {"done": 6.0, "warn": 8.0, "fail": 8.0, "stopped": 5.0, "ignored": 5.0, "feedback": 10.0}
+SETTLE_SECS = {"done": 6.0, "warn": 8.0, "fail": 8.0, "stopped": 5.0, "ignored": 5.0, "feedback": 10.0, "quit": 3.5}
 
 
 def _font(names: list[str], size: int):

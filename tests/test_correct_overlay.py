@@ -272,3 +272,68 @@ def test_voice_log_keeps_audio_and_text(tmp_path):
     entries = [json.loads(line) for line in (root / "voice_log.jsonl").read_text(encoding="utf-8").splitlines()]
     assert entries[0]["outcome"] == "ran" and entries[0]["heard"] == "メモ帳を開いて"
     assert (root / entries[0]["wav"]).exists()
+
+
+# ---- Esc と F9 ----
+
+def make_loop(events, texts=("メモ帳を開いて",), run_task=None, stt=None, cfg=None):
+    import threading
+    esc = threading.Event()
+    hooks = UiHooks()
+    loop = voice.VoiceLoop(cfg or {"voice": {}, "eval": {"ask_feedback": False}}, None, hooks, tts.Speaker(),
+                           stt or FakeSTT(list(texts)), FakePTT(events), FakeMic(len(texts)),
+                           run_task=run_task or (lambda *a: None), esc=esc)
+    return loop, esc, hooks
+
+
+def run_for(loop, secs):
+    import threading
+    import time
+    t = threading.Timer(secs, lambda: setattr(loop, "running", False))
+    t.start()
+    loop.run()
+    t.cancel()
+
+
+def test_idle_esc_twice_quits():
+    import threading
+    loop, esc, hooks = make_loop([])
+    threading.Timer(0.3, esc.set).start()
+    threading.Timer(0.9, esc.set).start()
+    run_for(loop, 3)
+    states = [s for s, _ in hooks.lines]
+    assert "quit" in states and loop.running is False
+    assert any(t == "終了します。" for _, t in hooks.lines)
+
+
+def test_idle_esc_once_only_asks():
+    import threading
+    loop, esc, hooks = make_loop([])
+    threading.Timer(0.3, esc.set).start()
+    run_for(loop, 1.5)
+    assert any("もう一度 Esc" in t for _, t in hooks.lines)
+    assert not any(t == "終了します。" for _, t in hooks.lines)
+
+
+def test_esc_during_recognition_cancels():
+    tasks = []
+
+    class EscDuringSTT(FakeSTT):
+        def transcribe(self, audio):
+            esc.set()                                  # 認識している間に Esc
+            return super().transcribe(audio)
+    loop, esc, hooks = make_loop(["down", "up"], run_task=lambda *a: tasks.append(a), stt=EscDuringSTT(["メモ帳を開いて"]))
+    run_for(loop, 1.5)
+    assert tasks == [] and any("取り消しました" in t for _, t in hooks.lines)
+
+
+def test_f9_during_run_stops_it():
+    import threading
+    stopped = threading.Event()
+    loop, esc, hooks = make_loop([])
+    loop.stop_run = stopped.set
+    loop._on_ptt_down()
+    assert not stopped.wait(0.2)                      # 待機中の F9 は止めない（話し始め）
+    loop.busy = True
+    loop._on_ptt_down()
+    assert stopped.wait(1)                             # 実行中の F9 は止める

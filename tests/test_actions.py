@@ -279,3 +279,10 @@ def test_element_field_aliases():
         assert actions.normalize({"action": "click", k: v})["element"] == 3
     assert "element" not in actions.normalize({"action": "click", "element": "abc"})
     assert "element" not in actions.normalize({"action": "type", "element": 3, "text": "a"})
+
+
+def test_say_validate_and_describe():
+    a, err = check({"action": "speak", "text": "表参道は晴れです"})
+    assert err is None and a["action"] == "say" and actions.describe(a) == "読み上げ「表参道は晴れです」"
+    assert "text" in check({"action": "say"})[1]
+    assert "長すぎる" in check({"action": "say", "text": "あ" * 301})[1]

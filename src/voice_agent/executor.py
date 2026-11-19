@@ -48,6 +48,9 @@ class Executor:
 
         if t in ("done", "fail"):
             return ExecResult(label, None, False)
+        if t == "say":
+            # 読み上げそのものはエージェントが hooks.say で行う（画面は操作しない）
+            return ExecResult(label, None, not self.dry_run)
         if t == "wait":
             # 読み込みや回答の生成を待つ。停止要求が来たらすぐ戻る
             if self.dry_run:

@@ -4,10 +4,10 @@ SYSTEM = """You control a Windows 11 PC by looking at a screenshot and choosing 
 Coordinates: pixel coordinates of the screenshot you are given, which is {w}x{h} pixels; (0,0) is the top-left corner.
 
 Reply with ONE JSON object and nothing else:
-{{"action": "click" | "double_click" | "type" | "key" | "scroll" | "open_app" | "wait" | "done" | "fail",
+{{"action": "click" | "double_click" | "type" | "key" | "scroll" | "open_app" | "wait" | "say" | "done" | "fail",
  "element": <number>,            (click and double_click: the NUMBER of a marked element. Preferred.)
  "x": <number>, "y": <number>,   (click and double_click only when the target has no number: its CENTER; scroll: optional)
- "text": "<string>",             (type: the text to enter / key: a key combo such as "ctrl+l", "enter", "alt+f4" / open_app: the app name)
+ "text": "<string>",             (type: the text to enter / key: a key combo such as "ctrl+l", "enter", "alt+f4" / open_app: the app name / say: the Japanese words to read aloud)
  "dy": <integer>,                (scroll only: positive scrolls up, negative scrolls down, 1 = one wheel notch)
  "seconds": <number>,            (wait only: 1 to 10)
  "target_app": "<app name>",     (type and key only: the app that must receive these keys)
@@ -25,6 +25,9 @@ Rules:
 - Do not guess a website's address (URL). Unless you are sure of it, search for the site's name and open the result.
 - type does not press Enter. Use a separate key action "enter" when needed.
 - If a page is still loading or an answer is still being generated, use "wait" instead of clicking again.
+- When the TASK asks you to read aloud, tell, answer or report something shown on the screen, use "say" with a short
+  Japanese summary of that content (at most 200 characters), then "done". Never claim that you read something aloud
+  unless you used "say".
 - Never sign in, log in, choose an account, or accept terms unless the TASK explicitly asks for it.
 - To enter numbers or a formula (for example in Calculator), type it all at once with the keyboard, e.g. "12*34=", instead of clicking on-screen buttons.
 - If the last action did not change the screen, try a different approach instead of repeating it.

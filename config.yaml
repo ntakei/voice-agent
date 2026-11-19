@@ -107,6 +107,8 @@ safety:
 # 音声入出力（フェーズ7）。--voice で使う
 voice:
   ptt_key: f9               # 押している間だけ録音するキー（f1〜f24, pause, scroll_lock, insert, right_ctrl など）
+  esc_quit: true            # 待機中に Esc を2回（3秒以内）押すと音声モードを終了する
+  hook_refresh_secs: 120    # 待機中、この秒数ごとにキーボードの監視（Esc・F9）を付け直す
   ptt_suppress: true        # このキーを前面アプリに渡さない（アプリ側で F9 が別の意味を持っていても動かないように）
   input_device: null        # マイク（null = Windows の既定。番号か名前の一部で指定）
   mic_always_on: true       # 音声モードの間マイクを開いたままにする（押した瞬間の話し始めが切れないように）
@@ -200,7 +202,8 @@ voice:
     rate: 0                 # 話す速さ -10（遅い）〜 10（速い）
     volume: 1.0             # 0.0〜1.0
     # 読み上げる種類: start（わかりました）/ reason（各操作の理由）/ confirm（確認のお願い）/ blocked / result（結果）
-    speak: [start, reason, confirm, blocked, result]
+    # answer = say 操作で画面の内容を読み上げる
+    speak: [start, reason, confirm, blocked, result, answer]
 
 
 # 成功率を測る（集計は scripts/eval_report.py、音声認識の精度は scripts/asr_eval.py）

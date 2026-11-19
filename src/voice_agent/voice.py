@@ -17,7 +17,7 @@ from .tts import Speaker
 class VoiceLoop:
     def __init__(self, cfg: dict, agent, hooks, speaker: Speaker, transcriber, ptt, recorder: rec.Recorder,
                  run_task=None, corrector=None, context=None, esc: threading.Event | None = None,
-                 log_dir: Path | None = None):
+                 log_dir: Path | None = None, stop_run=None, refresh_hooks=None):
         """corrector: 聞き間違いの補正（correct.Corrector）。None なら補正しない。
         context: () -> (前面アプリ名, 画面の言葉のリスト)。補正の手がかり。
         esc: Esc が押されたら立つイベント（「うまくいきましたか？」に「いいえ」と答える）。
@@ -40,6 +40,34 @@ class VoiceLoop:
         self.run_task = run_task or (lambda text, wav, meta: agent.run(text, source="voice", audio_wav=wav,
                                                                          extra_meta=meta))
         self.running = True
+        self.busy = False                         # エージェントが実行中か
+        self.stop_run = stop_run                  # 実行中に F9 が押されたら呼ぶ（止める）
+        self.refresh_hooks = refresh_hooks        # 待機中にときどきキーボードの監視を付け直す
+        self.refresh_secs = float(vc.get("hook_refresh_secs", 120))
+        self.esc_quit = bool(vc.get("esc_quit", True))
+        self._last_refresh = time.time()
+        self._quit_armed = 0.0
+        try:
+            self.ptt.on_down = self._on_ptt_down
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _on_ptt_down(self) -> None:
+        """キーボードの監視のスレッドから呼ばれる。実行中に F9 が押されたら、実行を止める（Esc と同じ）。"""
+        if self.busy and self.stop_run is not None:
+            threading.Thread(target=self.stop_run, daemon=True).start()
+
+    def _esc_pressed(self) -> bool:
+        return self.esc is not None and self.esc.is_set()
+
+    def _cancelled(self, where: str, audio=None, entry: dict | None = None) -> None:
+        """認識・補正の途中で Esc が押されたので、何もせずに待機に戻る。"""
+        self.esc.clear()
+        self.speaker.stop()
+        if entry is not None:
+            self._log({**entry, "outcome": "cancelled"}, audio)
+        self.hooks.status("ignored", f"取り消しました（{where}中に Esc）")
+        self._ui("ignored", "取り消しました", f"{where}中に Esc が押されました")
 
     def _log(self, entry: dict, audio=None) -> None:
         """音声ごとの記録（音声認識の精度の測定用。scripts/asr_eval.py で使う）。"""
@@ -92,6 +120,8 @@ class VoiceLoop:
         """キーのイベントを待つ（Ctrl+C で抜けられるよう、短い間隔で待つ）。"""
         end = None if timeout is None else time.time() + timeout
         while self.running:
+            if self._esc_pressed():
+                return "esc"
             try:
                 return self.ptt.events.get(timeout=0.2)
             except queue.Empty:
@@ -122,6 +152,10 @@ class VoiceLoop:
             ev = self._next_event(timeout=max(0.1, self.max_secs + 0.5 - (time.time() - t0)))
             if ev is None:
                 break                             # 最大秒数に達した
+            if ev == "esc":
+                audio = self.recorder.stop()
+                self._cancelled("録音")
+                return None, audio
         audio = self.recorder.stop()
         secs = audio.size / rec.RATE
         if secs < self.min_secs:
@@ -136,6 +170,9 @@ class VoiceLoop:
         self.hooks.status("transcribing", f"認識しています…（音声 {secs:.1f} 秒）")
         self._ui("transcribing", "認識しています…", f"音声 {secs:.1f} 秒")
         tr = self.transcriber.transcribe(audio)
+        if self._esc_pressed():
+            self._cancelled("認識", audio, {"heard": tr.text, "raw": tr.raw, "audio_secs": round(tr.audio_secs, 2)})
+            return None, audio
         if not tr.text:
             self._log({"outcome": "dropped", "heard": tr.raw, "dropped": tr.dropped,
                        "audio_secs": round(tr.audio_secs, 2)}, audio)
@@ -148,13 +185,26 @@ class VoiceLoop:
 
     def run(self) -> None:
         key = self.ptt.key.upper()
-        self.hooks.status("ready", f"準備ができました。{key} を押している間に話してください（終了は Ctrl+C）。")
+        quit_hint = "Esc を2回押す" if self.esc_quit else "Ctrl+C"
+        self.hooks.status("ready", f"準備ができました。{key} を押している間に話してください（終了は {quit_hint}）。")
         self.speaker.say(f"準備ができました。{key}を押しながら話してください。")
         self._ui("ready", f"{key} を押しながら話してください", "待機中")
         while self.running:
-            ev = self._next_event()
+            ev = self._next_event(timeout=5)
+            if ev is None:
+                if self.refresh_hooks is not None and time.time() - self._last_refresh > self.refresh_secs:
+                    try:
+                        self.refresh_hooks()          # キーボードの監視が外れていても、ここで付け直す
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._last_refresh = time.time()
+                continue
+            if ev == "esc":
+                self._on_idle_esc(key)
+                continue
             if ev != "down":
                 continue
+            self._quit_armed = 0.0
             tr, audio = self.listen_once()
             if tr is None:
                 continue
@@ -169,11 +219,20 @@ class VoiceLoop:
                 task = self._correct(tr.text, meta)
                 entry.update({k: meta[k] for k in ("corrected", "correction_confidence", "correction_reason")
                               if k in meta})
+                if self._esc_pressed():
+                    self._cancelled("補正", audio, entry)
+                    continue
                 if task is None:
                     self._log({**entry, "outcome": "asked_again"}, audio)
                     continue
             self.recent.append(task)
-            summary = self.run_task(task, rec.to_wav_bytes(audio), meta)
+            self.busy = True
+            try:
+                summary = self.run_task(task, rec.to_wav_bytes(audio), meta)
+            finally:
+                self.busy = False
+                if self.esc is not None:
+                    self.esc.clear()              # 実行を止めるために押した Esc を、ここで使い終える
             self._log({**entry, "outcome": "ran", "task": task,
                        "run": Path(summary["dir"]).name if summary and summary.get("dir") else ""}, audio)
             self._feedback(summary)
@@ -183,6 +242,21 @@ class VoiceLoop:
             self._drain()                         # 実行中に押されたキーは捨てる
             self.hooks.status("ready", f"\n次の指示をどうぞ（{key} を押しながら話す）。")
             self._ui("ready", f"{key} を押しながら話してください", "待機中")
+
+    def _on_idle_esc(self, key: str) -> None:
+        """待機中の Esc: 1回目で「もう一度 Esc で終了」と出し、3秒以内にもう一度押されたら終了する。"""
+        self.esc.clear()
+        self.speaker.stop()
+        if not self.esc_quit:
+            return
+        if self._quit_armed and time.time() - self._quit_armed < 3.0:
+            self.hooks.status("quit", "終了します。")
+            self._ui("stopped", "終了します", "")
+            self.running = False
+            return
+        self._quit_armed = time.time()
+        self.hooks.status("quit", "もう一度 Esc を押すと終了します（3秒以内）。")
+        self._ui("quit", "もう一度 Esc で終了します", f"続けるときは {key} を押しながら話してください")
 
     def _correct(self, heard: str, meta: dict) -> str | None:
         """聞き間違いを補正する。実行する指示を返す（確信度が低くて聞き直すときは None）。"""

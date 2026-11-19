@@ -86,12 +86,14 @@ def invoke_at(x: int, y: int) -> str:
                 if ctrl is None:
                     break
                 if ctrl.ControlTypeName in INVOKABLE:
+                    # 押した後に名前が変わる部品がある（ChatGPT の「送信」→「生成を中止」）ので、押す前に記録する
+                    what = _element(ctrl).describe()
                     pat = ctrl.GetPattern(auto.PatternId.InvokePattern)
                     if pat is not None and pat.Invoke():
-                        return _element(ctrl).describe()
+                        return what
                     legacy = ctrl.GetPattern(auto.PatternId.LegacyIAccessiblePattern)
                     if legacy is not None and legacy.DoDefaultAction():
-                        return _element(ctrl).describe()
+                        return what
                 ctrl = ctrl.GetParentControl()
     except Exception:  # noqa: BLE001  押せなければ何もしない（呼び出し側はマウスのクリックの結果のまま扱う）
         return ""

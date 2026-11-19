@@ -39,6 +39,9 @@ class Hooks:
     def ui(self, state: str, main: str, sub: str = "") -> None:
         """画面上の状態表示（overlay.py）。state は overlay.STATES のキー。既定は何もしない。"""
 
+    def wait_speech(self, timeout: float) -> None:
+        """読み上げが終わるまで待つ（say 操作のあと）。既定は何もしない。"""
+
 
 def friendly(a: dict, clicked=None) -> str:
     """状態表示用の、操作の短い説明（座標は出さない）。"""
@@ -57,6 +60,8 @@ def friendly(a: dict, clicked=None) -> str:
         return f"{a.get('text', '')} を開く"
     if t == "wait":
         return f"待っています（{a.get('seconds', 2):.0f} 秒）"
+    if t == "say":
+        return "読み上げています"
     return str(t)
 
 
@@ -98,8 +103,12 @@ class Agent:
     # ---- 外部から ----
 
     def stop(self) -> None:
-        """即時停止の要求。進行中のモデル呼び出しは待たずに捨てる。"""
+        """即時停止の要求。進行中のモデル呼び出し（補正・自動判定も含む）は接続を切って止める。
+        キーボードの監視のスレッドから呼ばれるので、接続を切る処理は別スレッドで行う（すぐ戻る）。"""
         self.stop_event.set()
+        cancel = getattr(self.client, "cancel", None)
+        if cancel:
+            threading.Thread(target=cancel, daemon=True).start()
 
     # ---- 安全ルール ----
 
@@ -247,6 +256,7 @@ class Agent:
         done_sigs: list[tuple] = []
         prev_img, prev_sig, next_img, prev_front = None, None, None, None
         warnings: list[str] = []
+        spoken: list[str] = []         # say で読み上げた文（自動判定にも渡す）
         front_name = ""
         no_change_run = bad_json_run = blocked_run = total_blocks = 0
         som = ac.get("som") or {}
@@ -282,7 +292,11 @@ class Agent:
                     changed = False
                 if prev_sig is not None and history:
                     history[-1]["changed"] = changed
-                    if changed is False and not self.dry_run:
+                    if history[-1].get("action") in ("say", "wait"):
+                        # 読み上げ・待つは画面を変えるための操作ではないので、「効果なし」とは扱わない
+                        changed = None
+                        history[-1]["changed"] = None
+                    elif changed is False and not self.dry_run:
                         no_change_run += 1
                         fails[prev_sig] = fails.get(prev_sig, 0) + 1
                         if fails[prev_sig] >= 2 and prev_sig not in blocked:
@@ -509,9 +523,12 @@ class Agent:
                         continue
                 self.hooks.status("acting", f"[{step:02d}] {r['secs']:.1f}s {'(思考 ' + thinking + ') ' if thinking != 'off' else ''}"
                                             f"{label} — {a.get('reason', '')}")
-                self.hooks.say(a.get("reason", ""), "reason")
-                self.hooks.ui("acting", friendly(a, d.clicked),
-                              f"{a.get('reason', '')} ・ ステップ {step}/{self.max_steps}")
+                if t == "say":
+                    self.hooks.ui("speaking", a["text"], f"読み上げています ・ ステップ {step}/{self.max_steps}")
+                else:
+                    self.hooks.say(a.get("reason", ""), "reason")
+                    self.hooks.ui("acting", friendly(a, d.clicked),
+                                  f"{a.get('reason', '')} ・ ステップ {step}/{self.max_steps}")
                 clicked_win = winapi.root_window_at(*point) if point and t in actions.CLICKS else None
                 is_link = (t == "click" and d.clicked is not None and d.clicked.control_type == "HyperlinkControl"
                            and front is not None)
@@ -540,6 +557,14 @@ class Agent:
                     self.hooks.status("acting", f"     {res.detail}")
                 done_sigs.append(sig)
                 page_unchanged = False
+                if t == "say" and res.executed:
+                    spoken.append(a["text"])
+                    self.hooks.status("speaking", f"     読み上げ: {a['text']}")
+                    self.hooks.say(a["text"], "answer")
+                    self.hooks.wait_speech(min(90.0, 3.0 + len(a["text"]) * 0.3))   # Esc で止められる
+                    if self.stop_event.is_set():
+                        s.log_step(row, record)
+                        raise Stopped()
                 line = f"{label} — {a.get('reason', '')}"
                 if not self.dry_run and not res.executed and res.detail.startswith("起動に失敗"):
                     line += f" -> FAILED: {res.detail}"
@@ -612,7 +637,7 @@ class Agent:
         if result == "done" and not self.dry_run and final is not None and ec.get("verify", True):
             # モデルの「完了」は自己申告なので、終了時の画面を別の呼び出しで見て判定する
             self.hooks.ui("looking", "結果を確かめています…", task)
-            v = evaluate.verify_task(self.client, task, final, reason, front_name)
+            v = evaluate.verify_task(self.client, task, final, reason, front_name, spoken)
             if v["achieved"] == "no":
                 warnings.append(f"終了時の画面では達成されていないようです（{v.get('evidence', '')}）")
             summary = evaluate.update_summary(s.dir, {"verify": v, "warnings": list(warnings)})

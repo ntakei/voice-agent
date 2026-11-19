@@ -41,7 +41,7 @@ def code_version() -> str:
         return ""
 
 
-def verify_task(client, task: str, image, claim: str = "", front_app: str = "") -> dict:
+def verify_task(client, task: str, image, claim: str = "", front_app: str = "", spoken: list[str] | None = None) -> dict:
     """終了時の画面で、タスクが達成されたかをモデルに判定させる。戻り値: achieved / evidence / secs。"""
     t = time.time()
     lines = [f"TASK: {task}"]
@@ -49,6 +49,10 @@ def verify_task(client, task: str, image, claim: str = "", front_app: str = "") 
         lines.append(f"AGENT'S CLAIM: {claim}")
     if front_app:
         lines.append(f"FRONT APP: {front_app}")
+    if spoken:
+        lines.append("AGENT SAID ALOUD: " + " / ".join(spoken))
+        lines.append("If the task asked to read aloud or tell something, judge whether what the agent said aloud "
+                     "matches what the screen shows.")
     lines.append("Return the JSON.")
     try:
         r = client.chat([{"role": "system", "content": VERIFY_SYSTEM}, {"role": "user", "content": "\n".join(lines)}],

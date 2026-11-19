@@ -15,7 +15,8 @@ from dataclasses import dataclass
 import pyautogui
 
 CLICKS = ("click", "double_click")
-ACTIONS = CLICKS + ("type", "key", "scroll", "open_app", "wait", "done", "fail")
+ACTIONS = CLICKS + ("type", "key", "scroll", "open_app", "wait", "say", "done", "fail")
+MAX_SAY = 300        # 読み上げる文の最大文字数
 NEEDS_TARGET_APP = ("type", "key")
 
 ACTION_ALIASES = {
@@ -25,6 +26,7 @@ ACTION_ALIASES = {
     "open": "open_app", "launch": "open_app", "launch_app": "open_app", "openapp": "open_app",
     "finish": "done", "finished": "done", "complete": "done", "stop": "fail",
     "sleep": "wait", "pause": "wait",
+    "speak": "say", "read_aloud": "say", "tell": "say", "answer": "say",
 }
 
 KEY_ALIASES = {
@@ -179,6 +181,12 @@ def validate(a: dict, image_size: tuple[int, int], apps: list[App]) -> str | Non
         bad = [k for k in keys if k not in VALID_KEYS]
         if bad:
             return f"不明なキー {bad}"
+    if t == "say":
+        text = a.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return "say には text（読み上げる文）が必要"
+        if len(text) > MAX_SAY:
+            return f"say の text が長すぎる（{MAX_SAY} 文字まで。要点だけにする）"
     if t in NEEDS_TARGET_APP and not str(a.get("target_app") or "").strip():
         return f"{t} には target_app（キーを受け取るアプリ名）が必要"
     if t == "scroll" and not (-MAX_SCROLL <= a.get("dy", 0) <= MAX_SCROLL and a.get("dy", 0) != 0):
@@ -229,6 +237,9 @@ def describe(a: dict, point: tuple[int, int] | None = None) -> str:
         return f"アプリを開く {a.get('text')}"
     if t == "wait":
         return f"待つ {a.get('seconds', 2):.0f} 秒"
+    if t == "say":
+        s = str(a.get("text", ""))
+        return f"読み上げ「{s[:30]}{'…' if len(s) > 30 else ''}」"
     if t == "done":
         return "完了"
     if t == "fail":

@@ -31,3 +31,9 @@ class StopKey:
         if self.listener is not None:
             self.listener.stop()
             self.listener = None
+
+    def restart(self) -> None:
+        """監視を付け直す。重い処理が続くと Windows がキーボードの監視（低レベルフック）を黙って外すことがあるので、
+        待機中にときどき付け直す。"""
+        self.stop()
+        self.start()

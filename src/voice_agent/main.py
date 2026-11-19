@@ -30,6 +30,10 @@ class ConsoleHooks(Hooks):
         if self.overlay is not None:
             self.overlay.show(state, main, sub)
 
+    def wait_speech(self, timeout: float) -> None:
+        if self.speaker is not None:
+            self.speaker.wait(timeout)
+
     def say(self, text: str, kind: str = "info") -> None:
         if self.speaker and (self.speak_kinds is None or kind in self.speak_kinds):
             self.speaker.say(text, interrupt=kind in ("confirm", "result", "blocked"))
@@ -80,10 +84,16 @@ def main(argv=None) -> None:
     stop_key = sc.get("stop_key", "esc")
     esc = threading.Event()        # Esc が押された（実行中なら停止、「うまくいきましたか？」には「いいえ」）
 
-    def on_stop():
+    def stop_run():
+        """実行を止める（モデル呼び出しも切る）。読み上げも止める。"""
         agent.stop()
+        if speaker is not None:
+            speaker.stop()
+
+    def on_stop():
+        stop_run()
         esc.set()
-    StopKey(on_stop, stop_key).start()
+    stop_key_listener = StopKey(on_stop, stop_key).start()
     mode = "dry-run（操作しません）" if agent.dry_run else "実際に操作します"
     print(f"モデル {cfg['model']['name']} / {mode} / 思考 通常={agent.think_normal} 行き詰まり={agent.think_stuck} "
           f"/ 最大 {agent.max_steps} ステップ")
@@ -110,7 +120,7 @@ def main(argv=None) -> None:
 
     try:
         if args.voice:
-            run_voice(args, cfg, agent, hooks, speaker, overlay, esc)
+            run_voice(args, cfg, agent, hooks, speaker, overlay, esc, stop_run, stop_key_listener)
             return
         if args.task:
             run_one(" ".join(args.task))
@@ -167,7 +177,7 @@ def screen_context(agent, cfg):
     return context
 
 
-def run_voice(args, cfg, agent, hooks, speaker, overlay=None, esc=None) -> None:
+def run_voice(args, cfg, agent, hooks, speaker, overlay=None, esc=None, stop_run=None, stop_key_listener=None) -> None:
     from . import stt
     from .correct import Corrector
     from .ptt import PushToTalk
@@ -205,7 +215,9 @@ def run_voice(args, cfg, agent, hooks, speaker, overlay=None, esc=None) -> None:
         print("聞き間違いの補正: あり（確信度が低いときは聞き直します）" if cc.get("ask_again_on_low", True)
               else "聞き間違いの補正: あり")
     loop = VoiceLoop(cfg, agent, hooks, speaker or Speaker(), tr, ptt, mic,
-                     corrector=corrector, context=screen_context(agent, cfg), esc=esc, log_dir=config.RUNS_DIR)
+                     corrector=corrector, context=screen_context(agent, cfg), esc=esc, log_dir=config.RUNS_DIR,
+                     stop_run=stop_run,
+                     refresh_hooks=lambda: (stop_key_listener and stop_key_listener.restart(), ptt.restart()))
     try:
         loop.run()
     except KeyboardInterrupt:

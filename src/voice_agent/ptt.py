@@ -33,6 +33,7 @@ class PushToTalk:
         self.events: "queue.Queue[str]" = queue.Queue()
         self.down = False
         self.listener = None
+        self.on_down = None                 # 押されたときにすぐ呼ぶ関数（実行中に押されたら止める、など）
 
     def handle(self, msg: int, vk: int, flags: int) -> bool:
         """キーイベント1件を処理する。このキーのイベントなら True（=他のアプリに渡さない対象）。"""
@@ -42,6 +43,11 @@ class PushToTalk:
             if not self.down:              # 押しっぱなしのキーリピートは1回だけ
                 self.down = True
                 self.events.put("down")
+                if self.on_down is not None:
+                    try:
+                        self.on_down()
+                    except Exception:  # noqa: BLE001  キーボードの監視を止めない
+                        pass
         elif msg in (_WM_KEYUP, _WM_SYSKEYUP):
             if self.down:
                 self.down = False
@@ -66,3 +72,9 @@ class PushToTalk:
         if self.listener is not None:
             self.listener.stop()
             self.listener = None
+
+    def restart(self) -> None:
+        """監視を付け直す（押している最中は付け直さない）。"""
+        if not self.down:
+            self.stop()
+            self.start()

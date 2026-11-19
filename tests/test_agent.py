@@ -696,3 +696,50 @@ def test_human_label_is_saved_and_shown(env):
 def test_outcome(summary, expect):
     from voice_agent import evaluate
     assert evaluate.outcome(summary) == expect
+
+
+# ---- 読み上げ（say）----
+
+def test_say_reads_aloud_and_is_passed_to_verify(env):
+    class SpeakHooks(QuietHooks):
+        def __init__(self):
+            super().__init__()
+            self.said, self.waited = [], []
+
+        def say(self, text, kind="info"):
+            self.said.append((text, kind))
+
+        def wait_speech(self, timeout):
+            self.waited.append(timeout)
+
+    class Verifying(FakeClient):
+        def chat(self, messages, image=None, thinking="off", **kw):
+            if "You check whether a task" in messages[0]["content"]:
+                self.verify_prompt = messages[-1]["content"]
+                return {"content": J(achieved="yes", evidence="晴れ 17℃")}
+            return super().chat(messages, image=image, thinking=thinking, **kw)
+    hooks = SpeakHooks()
+    client = Verifying([J(action="say", text="表参道は晴れ、17度です。", reason="答えを読み上げる"), J(action="done")])
+    ag = agent_mod.Agent({**CFG, "eval": {"verify": True}}, hooks=hooks, dry_run=False, client=client)
+    s = ag.run("ChatGPT の答えを読み上げて")
+    assert ("表参道は晴れ、17度です。", "answer") in hooks.said and hooks.waited
+    assert not any(k == "reason" and t == "答えを読み上げる" for t, k in hooks.said)   # 理由は読まずに答えだけ
+    assert env["acted"] == [] and s["result"] == "done"
+    assert "AGENT SAID ALOUD: 表参道は晴れ、17度です。" in client.verify_prompt
+    assert "did NOT change" not in client.calls[1]["prompt"]                          # 読み上げは「効果なし」に数えない
+
+
+def test_agent_stop_cancels_model_call_immediately(env):
+    import threading
+
+    class Cancellable(FakeClient):
+        def __init__(self):
+            super().__init__([])
+            self.cancelled = threading.Event()
+
+        def cancel(self):
+            self.cancelled.set()
+    client = Cancellable()
+    ag = agent_mod.Agent(CFG, hooks=QuietHooks(), client=client)
+    ag.stop()                                         # 待機中でも、補正・自動判定の呼び出しを切れるように
+    assert client.cancelled.wait(1) and ag.stop_event.is_set()

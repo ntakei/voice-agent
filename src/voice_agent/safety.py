@@ -122,7 +122,7 @@ class SafetyPolicy:
             return Decision(CONFIRM, "モデルが risky=true と判断")
         if t == "key" and _key_set(a["text"]) in self.risky_keys:
             return Decision(CONFIRM, f"送信・削除などに使われるキー {_combo(a)}")
-        if t in ("open_app", "scroll", "wait"):
+        if t in ("open_app", "scroll", "wait", "say"):
             # アプリを開く・スクロールはそれ自体では送信も削除もしない。
             # reason には先の手（「開いて削除する」など）が書かれることがあるので、語では判定しない。
             return Decision(ALLOW)
