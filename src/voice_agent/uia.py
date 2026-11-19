@@ -56,6 +56,23 @@ def focused_element() -> Element | None:
 INVOKABLE = {"HyperlinkControl", "ButtonControl", "MenuItemControl", "SplitButtonControl"}
 
 
+def actionable_at(x: int, y: int) -> Element | None:
+    """実画面座標 (x, y) のリンク・ボタン（その点の要素か、3階層までの親）。ボタンの中のアイコンや文字を
+    クリックしたとき、実際に押されるボタンを知るため（安全ルールの判定と、直接押す処理に使う）。"""
+    try:
+        with auto.UIAutomationInitializerInThread():
+            ctrl = auto.ControlFromPoint(x, y)
+            for _ in range(4):
+                if ctrl is None:
+                    return None
+                if ctrl.ControlTypeName in INVOKABLE:
+                    return _element(ctrl)
+                ctrl = ctrl.GetParentControl()
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
 def invoke_at(x: int, y: int) -> str:
     """実画面座標 (x, y) のリンク・ボタンを、UI Automation で直接押す（Invoke）。押せたら要素の説明を返す。
 
@@ -65,7 +82,7 @@ def invoke_at(x: int, y: int) -> str:
     try:
         with auto.UIAutomationInitializerInThread():
             ctrl = auto.ControlFromPoint(x, y)
-            for _ in range(3):
+            for _ in range(4):
                 if ctrl is None:
                     break
                 if ctrl.ControlTypeName in INVOKABLE:

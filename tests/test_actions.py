@@ -254,3 +254,20 @@ def test_click_records_focus_change(monkeypatch):
     monkeypatch.setattr(executor.pyautogui, "mouseUp", lambda *a, **k: None)
     r = executor.Executor(SCREEN, APPS, dry_run=False).execute(check({"action": "click", "x": 10, "y": 10})[0], IMG)
     assert r.executed and "押した直後 explorer.exe" in r.detail
+
+
+# ---- 待つ（wait）----
+
+def test_wait_normalize_and_validate():
+    a, err = check({"action": "wait", "seconds": 3})
+    assert err is None and a["seconds"] == 3.0 and actions.describe(a) == "待つ 3 秒"
+    assert check({"action": "sleep", "seconds": 60})[0]["seconds"] == 10.0     # 最大10秒
+    assert check({"action": "wait", "dy": 0.2})[0]["seconds"] == 1.0           # 最小1秒
+    assert check({"action": "wait", "seconds": "abc"})[0]["seconds"] == 2.0
+    assert actions.signature(check({"action": "wait", "seconds": 2})[0]) == ("wait",)
+
+
+def test_wait_dry_run_does_not_sleep(no_input, monkeypatch):
+    monkeypatch.setattr(executor.threading.Event, "wait", lambda self, t=None: (_ for _ in ()).throw(AssertionError))
+    r = executor.Executor(SCREEN, APPS, dry_run=True).execute(check({"action": "wait", "seconds": 5})[0], IMG)
+    assert r.executed is False and "5 秒待つ" in r.detail

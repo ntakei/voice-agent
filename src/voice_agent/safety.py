@@ -15,6 +15,7 @@ from .uia import Element
 from .winapi import WindowInfo
 
 ALLOW, CONFIRM, BLOCK, STOP = "allow", "confirm", "block", "stop"
+EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 # パスワード欄にフォーカスがあっても許すキー（欄から離れるためのもの）
 PASSWORD_SAFE_KEYS = {"tab", "shift+tab", "esc"}
 
@@ -121,10 +122,13 @@ class SafetyPolicy:
             return Decision(CONFIRM, "モデルが risky=true と判断")
         if t == "key" and _key_set(a["text"]) in self.risky_keys:
             return Decision(CONFIRM, f"送信・削除などに使われるキー {_combo(a)}")
-        if t in ("open_app", "scroll"):
+        if t in ("open_app", "scroll", "wait"):
             # アプリを開く・スクロールはそれ自体では送信も削除もしない。
             # reason には先の手（「開いて削除する」など）が書かれることがあるので、語では判定しない。
             return Decision(ALLOW)
+        if clicked is not None and EMAIL.search(clicked.name or ""):
+            # アカウントを選ぶボタン（「〇〇として続行, xxx@example.com」など）。フェーズ7で確認なしに押していた
+            return Decision(CONFIRM, "クリック先にメールアドレスがある（アカウントを選ぶ・ログインする操作）")
         for label, text in (("入力する文字列", a.get("text") if t == "type" else ""),
                             ("理由", reason),
                             ("クリック先の要素", clicked.name if clicked else "")):

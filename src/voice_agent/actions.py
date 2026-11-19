@@ -15,7 +15,7 @@ from dataclasses import dataclass
 import pyautogui
 
 CLICKS = ("click", "double_click")
-ACTIONS = CLICKS + ("type", "key", "scroll", "open_app", "done", "fail")
+ACTIONS = CLICKS + ("type", "key", "scroll", "open_app", "wait", "done", "fail")
 NEEDS_TARGET_APP = ("type", "key")
 
 ACTION_ALIASES = {
@@ -24,6 +24,7 @@ ACTION_ALIASES = {
     "input": "type", "write": "type", "type_text": "type",
     "open": "open_app", "launch": "open_app", "launch_app": "open_app", "openapp": "open_app",
     "finish": "done", "finished": "done", "complete": "done", "stop": "fail",
+    "sleep": "wait", "pause": "wait",
 }
 
 KEY_ALIASES = {
@@ -38,6 +39,7 @@ VALID_KEYS = set(pyautogui.KEYBOARD_KEYS)
 MAX_TEXT = 2000
 MAX_KEYS = 4
 MAX_SCROLL = 20
+MAX_WAIT = 10        # wait の最大秒数（1回あたり）
 
 
 def _to_bool(v) -> bool:
@@ -68,6 +70,13 @@ def normalize(a: dict) -> dict:
             a["dy"] = int(float(a.get("dy", -3)))
         except (TypeError, ValueError):
             a["dy"] = -3
+    if a["action"] == "wait":
+        # 秒数は seconds（なければ dy・text）。1〜MAX_WAIT 秒にそろえる
+        raw = a.get("seconds", a.get("dy") or a.get("text") or 2)
+        try:
+            a["seconds"] = min(max(float(raw), 1.0), float(MAX_WAIT))
+        except (TypeError, ValueError):
+            a["seconds"] = 2.0
     a["risky"] = _to_bool(a.get("risky", False))
     for k in ("text", "target_app", "reason"):
         if k in a and a[k] is not None and not isinstance(a[k], str):
@@ -126,6 +135,8 @@ def signature(a: dict) -> tuple:
         return (t, int(a["x"] // 30), int(a["y"] // 30))
     if t == "scroll":
         return (t, a.get("dy"))
+    if t == "wait":
+        return (t,)
     return (t, str(a.get("text", "")).strip().lower())
 
 
@@ -201,6 +212,8 @@ def describe(a: dict, point: tuple[int, int] | None = None) -> str:
         return f"スクロール {'上' if a.get('dy', 0) > 0 else '下'} {abs(a.get('dy', 0))}{at}"
     if t == "open_app":
         return f"アプリを開く {a.get('text')}"
+    if t == "wait":
+        return f"待つ {a.get('seconds', 2):.0f} 秒"
     if t == "done":
         return "完了"
     if t == "fail":

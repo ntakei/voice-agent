@@ -251,3 +251,16 @@ def test_loop_clicked_element_triggers_confirm(env):
     env["el"]["clicked"] = Element("送信", "ButtonControl", False)
     s, hooks, _ = run_with([J(action="click", x=10, y=10, reason="ボタンを押す")], False, env)
     assert s["result"] == "stopped" and "クリック先の要素" in hooks.questions[0]
+
+
+# ---- ログイン・アカウントを選ぶ操作は確認（ChatGPT の実地テストで、確認なしに押していた）----
+
+@pytest.mark.parametrize("name", ["Nobuyuki として続行, someone@example.com", "Google でログイン", "Sign in",
+                                  "Continue as Taro", "同意する", "taro.yamada+test@example.co.jp"])
+def test_sign_in_and_account_buttons_need_confirm(name):
+    d = check(A(action="click", x=10, y=10, reason="ボタンを押す"), clicked=Element(name, "ButtonControl", False))
+    assert d.kind == safety.CONFIRM, (name, d)
+
+
+def test_wait_is_allowed_even_with_risky_words_in_reason():
+    assert check(A(action="wait", seconds=3, reason="送信の完了を待つ")).kind == safety.ALLOW

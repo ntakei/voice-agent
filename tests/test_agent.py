@@ -72,6 +72,8 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(uia, "focused_element", lambda: el["focused"])
     # UI Automation で直接押す処理も記録だけ（実際の画面のボタンを押さないように）
     monkeypatch.setattr(uia, "invoke_at", lambda x, y: acted.append("invoke") or "Hyperlink「リンク」")
+    el["owner"] = None   # ボタンの中のアイコンをクリックしたときの、押されるボタン（既定はなし）
+    monkeypatch.setattr(uia, "actionable_at", lambda x, y: el["owner"])
     monkeypatch.setattr(agent_mod.Agent, "failsafe_check", lambda self: None)
     return {"frames": frames, "acted": acted, "tmp": tmp_path, "el": el, "front": front, "clicked_win": clicked_win}
 
@@ -548,3 +550,47 @@ def test_link_with_same_title_counts_as_no_effect(env):
     s = ag.run("テスト")
     assert "did NOT change" in client.calls[1]["prompt"] and "the page did not change" in client.calls[1]["prompt"]
     assert s["warnings"] and "画面が変わらなかった操作" in s["warnings"][0]   # 「完了」に要確認の警告
+
+
+# ---- ボタンの中のアイコン / 待つ / ログインの確認（ChatGPT の実地テストから）----
+
+def test_icon_inside_button_is_pressed_when_click_has_no_effect(env):
+    from voice_agent.uia import Element
+    env["el"]["clicked"] = Element("", "ImageControl", False)          # 送信ボタンの中の矢印の画像
+    env["el"]["owner"] = Element("プロンプトを送信する", "ButtonControl", False)
+
+    class Yes(QuietHooks):
+        def confirm(self, q):
+            return True
+    client = FakeClient([J(action="click", x=1172, y=453, reason="質問を送る"), J(action="done")])
+    ag = agent_mod.Agent(SAFETY_CFG, hooks=Yes(), dry_run=False, client=client)
+    ag.run("テスト")                                                   # 画面は変わらない
+    assert env["acted"] == ["moveTo", "click", "invoke"]
+
+
+def test_button_name_of_icon_is_checked_by_safety(env):
+    from voice_agent.uia import Element
+    env["el"]["clicked"] = Element("", "ImageControl", False)
+    env["el"]["owner"] = Element("送信", "ButtonControl", False)        # アイコンの名前は空でも、ボタンは「送信」
+    cfg = {**CFG, "safety": {"risky_words": ["送信"]}}
+    client = FakeClient([J(action="click", x=10, y=10, reason="押す")])
+    ag = agent_mod.Agent(cfg, hooks=QuietHooks(), dry_run=False, client=client)   # 確認は既定で「いいえ」
+    s = ag.run("テスト")
+    assert s["result"] == "stopped" and env["acted"] == []
+
+
+def test_wait_action(env):
+    import threading
+    waited = []
+
+    class RecordingEvent(threading.Event):
+        def wait(self, timeout=None):
+            if timeout and timeout >= 1:              # wait 操作の待ち（短いポーリングはそのまま）
+                waited.append(timeout)
+                return False
+            return super().wait(timeout)
+    ag, client = make([J(action="wait", seconds=3, reason="回答を待つ"), J(action="done")], dry_run=False)
+    ag.stop_event = RecordingEvent()
+    s = ag.run("テスト")
+    assert s["result"] == "done" and 3.0 in waited and env["acted"] == []
+    assert "待つ 3 秒" in client.calls[1]["prompt"]

@@ -55,6 +55,8 @@ def friendly(a: dict, clicked=None) -> str:
         return "スクロール " + ("上" if a.get("dy", 0) > 0 else "下")
     if t == "open_app":
         return f"{a.get('text', '')} を開く"
+    if t == "wait":
+        return f"待っています（{a.get('seconds', 2):.0f} 秒）"
     return str(t)
 
 
@@ -103,9 +105,17 @@ class Agent:
     def check_safety(self, a: dict, front: winapi.WindowInfo | None, point: tuple[int, int] | None) -> safety.Decision:
         """OS から要素情報を取って安全ルールを判定する。"""
         clicked = uia.element_at(*point) if point and a["action"] in actions.CLICKS else None
+        owner = (uia.actionable_at(*point)
+                 if clicked is not None and clicked.control_type not in uia.INVOKABLE else None)
+        judged = clicked
+        if owner is not None and owner.name and owner.name != clicked.name:
+            # ボタンの中のアイコン・文字をクリックしたときは、実際に押されるボタンの名前でも判定する
+            judged = uia.Element(f"{clicked.name} {owner.name}".strip(), clicked.control_type, clicked.is_password,
+                                 clicked.automation_id)
         focused = uia.focused_element() if a["action"] in ("type", "key") else None
-        d = self.policy.check(a, front, focused=focused, clicked=clicked)
+        d = self.policy.check(a, front, focused=focused, clicked=judged)
         d.clicked, d.focused = clicked, focused  # ログ用
+        d.owner = owner                          # 直接押す処理で使う（ボタンの中のアイコンをクリックした場合）
         return d
 
     def failsafe_check(self) -> None:
@@ -501,7 +511,8 @@ class Agent:
                     if next_img is None:
                         s.log_step(row, record)
                         raise Stopped()
-                    if t == "click" and res.executed and not pressed and d.clicked is not None                             and d.clicked.control_type in uia.INVOKABLE:
+                    if t == "click" and res.executed and not pressed and d.clicked is not None and (
+                            d.clicked.control_type in uia.INVOKABLE or getattr(d, "owner", None) is not None):
                         invoked = self._invoke_if_no_effect(img, next_img, front, point)
                         if invoked:
                             row["notes"].append(invoked)

@@ -78,7 +78,11 @@ safety:
   # 日本語は部分一致、英語は単語単位で照合
   risky_words: [送信, 送る, 削除, 消去, 消す, 購入, 買う, 注文, 支払, 決済, 提出, 投稿, 公開, 送金, 振込, 振り込,
                 ゴミ箱を空, 完全に削除, send, delete, remove, buy, purchase, order, pay, checkout, submit, post,
-                publish, transfer, erase]
+                publish, transfer, erase,
+                # ログイン・アカウント・同意（フェーズ7: Google の「〇〇として続行」を確認なしに押していた）
+                ログイン, サインイン, ログオン, として続行, 続行, 許可, 同意, 承認, アカウントを選択,
+                sign in, signin, log in, login, continue as, allow, authorize, accept, agree]
+  # これに加えて、クリック先の名前にメールアドレスがあれば確認する（アカウントを選ぶボタン）
   # 確認が必要なキー（送信・削除のショートカット）
   risky_keys: [delete, shift+delete, ctrl+enter, ctrl+shift+enter, alt+s, ctrl+d, alt+f4]
   # 実行を拒否するキー（Windows キーの組み合わせは、許可リスト外のアプリを起動できるので一律拒否）

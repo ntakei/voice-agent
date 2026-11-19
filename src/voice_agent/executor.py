@@ -48,6 +48,12 @@ class Executor:
 
         if t in ("done", "fail"):
             return ExecResult(label, None, False)
+        if t == "wait":
+            # 読み込みや回答の生成を待つ。停止要求が来たらすぐ戻る
+            if self.dry_run:
+                return ExecResult(label, None, False, f"{a.get('seconds', 2):.0f} 秒待つ")
+            self.stop_event.wait(float(a.get("seconds", 2)))
+            return ExecResult(label, None, True)
         if t == "open_app":
             return self._open_app(a, label)
         if self.dry_run:
